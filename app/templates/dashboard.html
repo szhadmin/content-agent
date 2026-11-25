@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% block title %}工作台 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+
+<div class="dash-hero">
+  <div class="dash-hero-glow"></div>
+  <div class="dash-hero-inner">
+    <div>
+      <div class="dash-hero-kicker">内容工作台</div>
+      <h1>今天想写点什么？</h1>
+      <p class="sub">选题 → 写作 → 自检 → 排版 → 封面 → 草稿。发布永远需要你点第二次。</p>
+    </div>
+    <a class="btn hero-cta" href="{{ P }}/topics">🔥 从热搜选题 →</a>
+  </div>
+</div>
+
+<div class="btnrow" style="margin-bottom:16px" id="plat-tabs">
+  <a class="btn" href="{{ P }}/"
+     style="{{ 'background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600' if not platform }}">全部平台
+    <span style="opacity:.75">{{ platform_counts.values()|sum }}</span></a>
+  {% for key, p in PLATFORMS.items() %}
+  <a class="btn" href="{{ P }}/?platform={{ key }}"
+     style="{{ 'background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600' if platform == key }}">
+    {{ p.label }}<span style="opacity:.75;margin-left:5px">{{ platform_counts.get(key, 0) }}</span>
+    {% if p.status != 'ready' %}<span class="note" style="margin-left:4px">未接入</span>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% if not llm_ready %}
+<div class="alert warn">
+  还没有配置模型 API Key，生成功能用不了。去 <a href="{{ P }}/settings">设置</a> 填一个。
+</div>
+{% endif %}
+{% if not accounts %}
+<div class="alert err">
+  还没有任何账号。先去 <a href="{{ P }}/accounts">账号</a> 加一个：公众号要 AppID / AppSecret，
+  头条号添加完扫码登录即可。
+</div>
+{% endif %}
+{% if not font.ok %}
+<div class="alert warn">
+  服务器上没找到中文字体，封面标题会画不出来。执行：<code>apt install -y fonts-noto-cjk</code>
+</div>
+{% endif %}
+
+<div class="dash-quick card">
+  <div class="dash-quick-main">
+    <label class="f" style="margin-bottom:0;flex:1">
+      <span>一句话给个题，AI 直接开写</span>
+      <input type="text" id="quick-topic" placeholder="比如：为什么现在的年轻人不爱换手机了？" />
+    </label>
+    <label class="f" style="max-width:180px;margin-bottom:0">
+      <span>写给哪个号</span>
+      <select id="quick-account">
+        {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if a.is_default }}>{{ PLATFORM_LABELS.get(a.platform or 'wechat') }}·{{ a.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button class="primary" id="btn-quick-gen" type="button" style="height:38px;padding:0 22px">生成 →</button>
+  </div>
+  <div class="dash-quick-foot">
+    <a class="btn ghost" href="{{ P }}/topics">🔥 热搜选题</a>
+    <a class="btn ghost" href="#schedules">⏰ 定时任务（{{ schedules|length }}）</a>
+    <span class="note">写完会自动配图、做封面，你可以再改</span>
+  </div>
+</div>
+
+<div class="stats" id="stats">
+  <button class="stat" data-jump="all"><b>{{ stats.total }}</b><span>全部稿件</span></button>
+  <button class="stat" data-jump="draft"><b>{{ stats.drafts }}</b><span>草稿中</span></button>
+  {% if stats.generating %}<div class="stat"><b>{{ stats.generating }}</b><span>生成中</span></div>{% endif %}
+  <button class="stat" data-jump="pushed"><b>{{ stats.pushed }}</b><span>已进草稿箱</span></button>
+  <button class="stat" data-jump="published"><b>{{ stats.published }}</b><span>已发布</span></button>
+  <div class="stat" style="border-style:dashed"><b>{{ stats.accounts }}</b><span>账号</span></div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+    <h2 style="margin:0">稿件</h2>
+    <div class="btnrow">
+      <input type="text" id="art-search" placeholder="搜标题…" style="width:180px;padding:6px 9px" />
+      <div id="art-tabs" class="btnrow" style="gap:6px"></div>
+    </div>
+  </div>
+  <div id="art-list"></div>
+  <div id="art-pager" class="btnrow" style="justify-content:center;margin-top:12px"></div>
+</div>
+
+<details class="card" id="schedules">
+  <summary style="cursor:pointer;font-weight:600;font-size:15px">定时任务配置</summary>
+  <div style="margin-top:14px">
+    <p class="note" style="margin-bottom:12px">
+      到点自动：抓热搜 → 智能选题 → 写稿 → 建草稿。<b>不会自动发布</b>。同一天同一档只会跑一次。
+    </p>
+    {% if schedules %}
+    <table class="t" style="margin-bottom:14px">
+      <thead><tr><th>名称</th><th style="width:80px">时间</th><th style="width:66px">档位</th><th style="width:80px">建草稿</th><th style="width:120px">状态</th><th style="width:170px"></th></tr></thead>
+      <tbody>
+        {% for s in schedules %}
+        <tr>
+          <td>{{ s.name }}</td>
+          <td>{{ '%02d:%02d' % (s.hour, s.minute) }}</td>
+          <td><span class="badge">{{ SLOT_LABELS.get(s.slot, s.slot) }}</span></td>
+          <td>{{ '是' if s.push_draft else '否' }}</td>
+          <td>{% if s.enabled %}<span class="badge green">启用</span>{% else %}<span class="badge">暂停</span>{% endif %}
+            {% if s.last_run %}<div class="note">{{ s.last_run[:16] }}</div>{% endif %}</td>
+          <td class="btnrow">
+            <button data-sched-run="{{ s.id }}" type="button">立即跑</button>
+            <button data-sched-toggle="{{ s.id }}" type="button">{{ '暂停' if s.enabled else '启用' }}</button>
+            <button class="danger" data-sched-del="{{ s.id }}" type="button">删除</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    <div class="inline" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <label class="f" style="max-width:190px"><span>名称</span><input type="text" id="sch-name" placeholder="早报自动出稿" /></label>
+      <label class="f" style="max-width:80px"><span>时</span><input type="number" id="sch-hour" value="8" min="0" max="23" /></label>
+      <label class="f" style="max-width:80px"><span>分</span><input type="number" id="sch-minute" value="0" min="0" max="59" /></label>
+      <label class="f" style="max-width:110px"><span>档位</span>
+        <select id="sch-slot">{% for k, v in SLOT_LABELS.items() %}<option value="{{ k }}" {{ 'selected' if k=='morning' }}>{{ v }}</option>{% endfor %}</select>
+      </label>
+      <label class="f" style="max-width:160px"><span>账号</span>
+        <select id="sch-account">{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if a.is_default }}>{{ PLATFORM_LABELS.get(a.platform or 'wechat') }}·{{ a.name }}</option>{% endfor %}</select>
+      </label>
+      <label class="check" style="margin-bottom:9px"><input type="checkbox" id="sch-push" checked /> 自动建草稿</label>
+      <button id="btn-sch-add" type="button" style="margin-bottom:2px">添加任务</button>
+    </div>
+  </div>
+</details>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ARTICLES = {{ articles|tojson }};
+const SLOT_LABELS = {{ SLOT_LABELS|tojson }};
+const PLATFORM_LABELS = {{ PLATFORM_LABELS|tojson }};
+const STATUS_TEXT = { draft: '草稿中', generating: '生成中', failed: '失败', pushed: '已进草稿箱', published: '已发布' };
+const PAGE_SIZE = 8;
+let filterStatus = 'all';
+let keyword = '';
+let page = 1;
+
+function renderTabs() {
+  const tabs = [['all', '全部'], ['draft', '草稿中'], ['pushed', '已进草稿箱'], ['published', '已发布'], ['failed', '失败']];
+  $('#art-tabs').innerHTML = tabs.map(([k, label]) => {
+    const n = k === 'all' ? ARTICLES.length : ARTICLES.filter(a => a.status === k).length;
+    const on = filterStatus === k;
+    return `<button data-tab="${k}" type="button" style="${on ? 'background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600;' : ''}">
+      ${label}<span style="opacity:.7;margin-left:5px">${n}</span></button>`;
+  }).join('');
+  $$('[data-tab]').forEach(b => b.addEventListener('click', () => {
+    filterStatus = b.dataset.tab; page = 1; renderTabs(); renderList();
+  }));
+}
+
+function filtered() {
+  return ARTICLES.filter(a => {
+    if (filterStatus !== 'all' && a.status !== filterStatus) return false;
+    if (keyword && !(a.title || '').toLowerCase().includes(keyword)) return false;
+    return true;
+  });
+}
+
+function renderList() {
+  const rows = filtered();
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  page = Math.min(page, pages);
+  const slice = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  if (!slice.length) {
+    $('#art-list').innerHTML = '<div class="empty">没有匹配的稿件</div>';
+  } else {
+    $('#art-list').innerHTML = `<table class="t">
+      <thead><tr><th>标题</th><th style="width:76px">平台</th><th style="width:70px">档位</th><th style="width:96px">状态</th>
+      <th style="width:52px">配图</th><th style="width:96px">更新时间</th><th style="width:52px"></th></tr></thead>
+      <tbody>${slice.map(a => {
+        const badge = a.status === 'pushed' ? 'blue' : (a.status === 'published' ? 'green' : (a.status === 'failed' ? 'err' : (a.status === 'generating' ? 'warn' : '')));
+        const imgs = (a.images_meta && a.images_meta.length) ? a.images_meta.length : (a.images ? a.images.length : 0);
+        return `<tr>
+          <td><a href="${P}/article/${a.id}">${esc(a.title || '（未命名）')}</a>
+            ${a.account_name ? `<span class="note">· ${esc(a.account_name)}</span>` : ''}</td>
+          <td><span class="badge blue">${esc(PLATFORM_LABELS[a.platform || 'wechat'] || a.platform || '')}</span></td>
+          <td><span class="badge">${esc(SLOT_LABELS[a.slot] || a.slot)}</span></td>
+          <td><span class="badge ${badge}">${STATUS_TEXT[a.status] || a.status}</span></td>
+          <td class="note">${imgs ? imgs + ' 张' : '—'}</td>
+          <td class="note">${(a.updated_at || '').slice(5, 16)}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a href="${P}/article/${a.id}">打开</a>
+            <button class="mini danger" data-delart="${a.id}" data-title="${esc(a.title || '')}"
+              style="margin-left:6px">删</button>
+          </td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+    $$('[data-delart]').forEach(b => b.addEventListener('click', async () => {
+      const id = parseInt(b.dataset.delart, 10);
+      const title = b.dataset.title || '这篇稿';
+      if (!confirm(`从工作台删除「${title}」？\n（不影响公众号草稿箱）`)) return;
+      try {
+        await api(`/api/article/${id}/delete`, {});
+        const i = ARTICLES.findIndex(x => x.id === id);
+        if (i >= 0) ARTICLES.splice(i, 1);
+        renderTabs(); renderList();
+        toast('已删除', 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+    }));
+  }
+
+  $('#art-pager').innerHTML = pages > 1
+    ? `<button data-pg="prev" type="button" ${page === 1 ? 'disabled' : ''}>上一页</button>
+       <span class="note" style="align-self:center">${page} / ${pages}</span>
+       <button data-pg="next" type="button" ${page === pages ? 'disabled' : ''}>下一页</button>`
+    : '';
+  $$('[data-pg]').forEach(b => b.addEventListener('click', () => {
+    page += (b.dataset.pg === 'next' ? 1 : -1); renderList();
+  }));
+}
+
+$('#art-search').addEventListener('input', (e) => {
+  keyword = e.target.value.trim().toLowerCase(); page = 1; renderList();
+});
+
+$$('[data-jump]').forEach(b => b.addEventListener('click', () => {
+  filterStatus = b.dataset.jump; page = 1;
+  renderTabs(); renderList();
+  document.querySelector('#art-tabs').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}));
+
+/* 快捷出稿 */
+$('#btn-quick-gen') && $('#btn-quick-gen').addEventListener('click', async (e) => {
+  const topic = $('#quick-topic').value.trim();
+  if (!topic) { toast('先填个选题', 'err'); return; }
+  const btn = e.currentTarget;
+  busy(btn, true, '生成中…');
+  try {
+    const r = await api('/api/generate', {
+      topic, slot: 'extra',
+      account_id: parseInt($('#quick-account').value, 10) || null,
+      async_mode: true,
+    });
+    toast('已开始生成，正在打开稿子…', 'ok');
+    location.href = P + '/article/' + r.article_id + '?generating=1';
+  } catch (err) { toast(err.message, 'err'); busy(btn, false); }
+});
+
+/* 定时任务 */
+$('#btn-sch-add') && $('#btn-sch-add').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '添加中…');
+  try {
+    await api('/api/schedules', {
+      name: $('#sch-name').value.trim(),
+      hour: parseInt($('#sch-hour').value, 10),
+      minute: parseInt($('#sch-minute').value, 10),
+      slot: $('#sch-slot').value,
+      account_id: parseInt($('#sch-account').value, 10),
+      push_draft: $('#sch-push').checked,
+    });
+    toast('已添加', 'ok');
+    setTimeout(() => location.reload(), 500);
+  } catch (err) { toast(err.message, 'err'); busy(btn, false); }
+});
+$$('[data-sched-toggle]').forEach(b => b.addEventListener('click', async () => {
+  try { await api('/api/schedules/' + b.dataset.schedToggle + '/toggle', {}); location.reload(); }
+  catch (err) { toast(err.message, 'err'); }
+}));
+$$('[data-sched-del]').forEach(b => b.addEventListener('click', async () => {
+  if (!confirm('删除这个定时任务？')) return;
+  try { await api('/api/schedules/' + b.dataset.schedDel + '/delete', {}); location.reload(); }
+  catch (err) { toast(err.message, 'err'); }
+}));
+$$('[data-sched-run]').forEach(b => b.addEventListener('click', async () => {
+  busy(b, true, '跑…');
+  try {
+    const r = await api('/api/schedules/' + b.dataset.schedRun + '/run', {});
+    if (r.result && r.result.article_id) { toast('已生成', 'ok'); location.href = P + '/article/' + r.result.article_id; }
+    else { toast(JSON.stringify(r.result)); location.reload(); }
+  } catch (err) { toast(err.message, 'err'); busy(b, false); }
+}));
+
+renderTabs(); renderList();
+</script>
+{% endblock %}

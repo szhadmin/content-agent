@@ -1,0 +1,998 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title or '未命名' }} · 编辑{% endblock %}
+{% block main %}
+
+<div class="edbar" id="edbar">
+  <div class="edbar-l">
+    <a href="{{ P }}/" class="link-muted" style="white-space:nowrap">← 工作台</a>
+    <span id="badge" class="badge">…</span>
+    <span class="badge" id="badge-account">{{ account.name }}</span>
+    <span class="badge">{{ SLOT_LABELS.get(article.slot, article.slot) }}</span>
+    <span class="note" id="saved-at"></span>
+  </div>
+  <div class="btnrow">
+    <span class="badge blue" title="这篇稿件属于哪个平台">{{ PLATFORM_LABELS.get(platform, platform) }}</span>
+    <button class="primary" id="btn-save" type="button">保存</button>
+    <button id="btn-rerender" type="button">刷新预览</button>
+    {% if platform == 'wechat' %}
+    <button class="primary" id="btn-push" type="button">存入草稿箱</button>
+    {% elif platform == 'toutiao' %}
+    <button class="primary" id="btn-tt-draft" type="button" title="浏览器驱动头条后台，只存草稿">存到头条草稿</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" id="genbox" style="display:none;border-color:#c9ebd9;background:#f6fdf9">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <span class="spin"></span>
+    <b id="genstage">生成中…</b>
+    <span class="note" id="gentime"></span>
+    <span class="note">生成期间不可编辑，完成后会自动解锁并刷新预览</span>
+  </div>
+  <pre id="genlog" class="logbox" style="max-height:190px"></pre>
+</div>
+
+<div class="grid2" style="align-items:start">
+  <!-- ================= 左：编辑 ================= -->
+  <div>
+    <div class="card">
+      <label class="f"><span>标题（≤15 字最好，「反问 + 结论」）</span>
+        <input type="text" id="f-title" value="{{ article.title }}" />
+      </label>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+        <span class="note" id="title-count"></span>
+        <button id="btn-titles" type="button" class="mini">让模型起 6 个标题</button>
+      </div>
+      <div id="title-suggest" style="margin-bottom:12px"></div>
+
+      <label class="f"><span>摘要 digest</span>
+        <textarea id="f-digest" rows="2">{{ article.digest }}</textarea>
+      </label>
+      <label class="f"><span>作者</span>
+        <input type="text" id="f-author" value="{{ article.author }}" />
+      </label>
+
+      <label class="f" style="margin-bottom:6px"><span>正文 Markdown</span>
+        <textarea id="f-markdown" rows="26" class="mono">{{ article.markdown }}</textarea>
+      </label>
+
+      <div class="btnrow">
+        <label class="btn" style="cursor:pointer">插入图片
+          <input type="file" id="file-img" accept="image/*" style="display:none" />
+        </label>
+        <button id="btn-url-img" type="button">从网址插图</button>
+        <button id="btn-ai-img" type="button"
+          title="{% if character %}按人物「{{ character.name }}」生图，同一个人不同场景{% else %}按这个号的人设和选题，AI 生一张配图{% endif %}">AI 配图</button>
+        {% if character %}<span class="badge" title="这个号绑了虚拟人物，AI 配图会带这个人的长相">🎭 {{ character.name }}</span>{% endif %}
+        <button id="btn-layout" type="button" title="只动段落/小标题/加粗结构，不改事实和语气">AI 优化排版</button>
+        <button id="btn-humanize" type="button" title="改写语言，去掉 AI 腔">去 AI 味</button>
+        <button id="btn-regen" type="button">重新写一篇</button>
+      </div>
+      <div class="note" id="img-hint" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card tight">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">配图 <span class="note" id="img-count"></span></h2>
+        <div class="btnrow">
+          <input type="number" id="img-want" min="1" max="8" value="{{ image_quota }}" class="mini" style="width:60px" />
+          <button id="btn-fetch-imgs" type="button">重新抓图</button>
+        </div>
+      </div>
+      <div id="imgs" class="imgrid"></div>
+      <p class="note" style="margin:10px 0 0">
+        拖动卡片可调顺序；图注直接改，失焦即保存；「换一张」会抓同选题的另一张网图。
+      </p>
+    </div>
+
+    <div class="card tight">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">封面（900×383）</h2>
+        <span class="note" id="cover-src-hint"></span>
+      </div>
+      <img id="cover-img" src="{{ cover_url }}" alt="封面"
+           style="width:100%;border:1px solid var(--line);border-radius:8px;background:#fafafa" />
+      <div class="btnrow" style="margin-top:10px">
+        <button id="btn-cover" type="button">用当前标题重做封面</button>
+        <button id="btn-ai-cover" type="button" title="AI 生成封面底图并压上标题">AI 封面</button>
+        <select id="cover-src" style="max-width:240px">
+          <option value="">纯色底 + 标题</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 右：预览 / 自检 / 发布 ================= -->
+  <div class="rightcol">
+    <div class="card tight">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">手机预览</h2>
+        <div class="btnrow">
+          <select id="preview-theme" class="mini" style="max-width:120px">
+            {% for k, v in themes.items() %}
+            <option value="{{ k }}" {{ 'selected' if k == theme }}>{{ v.label }}</option>
+            {% endfor %}
+          </select>
+          <div id="widths" class="btnrow" style="gap:4px"></div>
+        </div>
+      </div>
+      <div class="phone">
+        <iframe id="preview" style="width:375px;height:760px"></iframe>
+      </div>
+      <p class="note" style="margin:8px 0 0">左边正文滚动时，预览会跟着滚（比例联动）。</p>
+    </div>
+
+    <div class="card tight">
+      <h2 style="margin-bottom:10px">自检</h2>
+      <div id="checks"><div class="empty" style="padding:14px">刷新预览后出结果</div></div>
+    </div>
+
+    <div class="card tight">
+      <h2 style="margin-bottom:10px">操作日志</h2>
+      <pre id="log" class="logbox">{{ article.log or '（暂无）' }}</pre>
+    </div>
+
+    {% if platform == 'toutiao' %}
+    <div class="card tight">
+      <h2 style="margin-bottom:10px">头条号草稿</h2>
+      <div class="alert err" id="tt-alert" style="display:none;margin-bottom:10px;white-space:pre-wrap;font-size:12.5px"></div>
+      <p class="note" style="margin:0 0 10px" id="tt-status">
+        {%- if tt_status and tt_status.logged_in -%}已登录（{{ tt_status.saved_at }} 存的）
+        {%- elif tt_status and tt_status.expired -%}登录态过期了，重新扫一下码
+        {%- else -%}还没登录头条号{%- endif -%}
+      </p>
+      <div id="tt-login" style="display:{{ '' if not (tt_status and tt_status.logged_in) else 'none' }}">
+        <div class="alert warn" style="font-size:12.5px;margin-bottom:10px">
+          用<b>今日头条 App</b> 扫码登录「{{ account.name }}」。登录态只存本机
+          （data/toutiao_state_{{ account.id }}.json），头条那边不掉线。
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
+          <img id="tt-qr" alt="头条登录二维码"
+               style="width:200px;height:200px;border:1px solid var(--line);border-radius:8px;background:#fff" />
+          <div style="flex:1;min-width:180px">
+            <p class="note" id="tt-login-msg" style="margin:0 0 8px">点「扫码登录」生成二维码，每 3 秒自动刷新</p>
+            <div class="btnrow">
+              <button id="btn-tt-login" type="button" class="mini">扫码登录</button>
+              <button id="btn-tt-cancel" type="button" class="mini">取消</button>
+              <button id="btn-tt-logout" type="button" class="mini">忘掉登录态</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin:10px 0 0" id="tt-last"></p>
+      <p class="note" style="margin:6px 0 0">
+        只写草稿，代码里没有点「发布」的路径。标题超 30 字会被截断；正文图能进几张进几张，
+        没进去的会写进日志，草稿可以事后人工补。头条号新号可能要先去绑手机号才能发东西。
+      </p>
+    </div>
+    {% endif %}
+
+    {% if platform == 'wechat' %}
+    <div class="card tight">
+      <h2 style="margin-bottom:10px">发布（公众号）</h2>
+      <div class="alert warn" style="font-size:12.5px;margin-bottom:10px">
+        存入草稿箱是可逆的。正式发布<b>不可撤回</b>，群发后读者立刻收到。
+      </div>
+      <label class="check"><input type="checkbox" id="pub-confirm" /> 我已核对正文、配图、封面，确认可以群发</label>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="danger" id="btn-publish" type="button" disabled>正式发布</button>
+        <button id="btn-del-draft" type="button">删掉草稿箱旧稿</button>
+        <button class="danger" id="btn-del-article" type="button">删除这篇稿</button>
+      </div>
+      <p class="note" style="margin:8px 0 0">
+        账号没开「允许发布」时会被拒绝；多数订阅号只能建草稿（接口返回 48001）。
+      </p>
+    </div>
+    {% else %}
+    <div class="card tight">
+      <h2 style="margin-bottom:10px">{{ PLATFORM_LABELS.get(platform, platform) }}稿件</h2>
+      <div class="alert info" style="font-size:12.5px;margin-bottom:10px">
+        {% if platform == 'dianping' %}
+          大众点评还没接入投递。这篇稿子可以正常写、正常改，只是没有「存草稿」按钮。
+        {% else %}
+          这篇稿子属于{{ PLATFORM_LABELS.get(platform, platform) }}，投递方式和公众号不一样，
+          用上面那个平台专属的按钮。
+        {% endif %}
+      </div>
+      <div class="btnrow">
+        <button class="danger" id="btn-del-article" type="button">删除这篇稿</button>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const AID = {{ article.id }};
+const ACC_ID = {{ account.id }};
+const PLATFORM = {{ platform|tojson }};
+/* 平台不同，页面上的投递按钮也不同；条件渲染掉的按钮不能直接绑定，否则 null 报错把整页 JS 带崩 */
+function on(sel, ev, fn) { const el = $(sel); if (el) el.addEventListener(ev, fn); return el; }
+let state = {
+  id: AID,
+  status: {{ article.status|tojson }},
+  media_id: {{ (article.media_id or '')|tojson }},
+  log: {{ (article.log or '')|tojson }},
+  images_meta: {{ (article.images_meta or [])|tojson }},
+};
+let dirty = false;
+let lastSaved = '';
+let pollTimer = null;
+let genStart = Date.now();
+const GEN_STATUS = {{ article.status|tojson }};
+
+const md = $('#f-markdown');
+const previewFrame = $('#preview');
+
+/* ---------------- 标题字数 ---------------- */
+function titleCount() {
+  const t = $('#f-title').value || '';
+  const n = (t.match(/[0-9A-Za-z\u4e00-\u9fff]/g) || []).length;
+  const hasQ = /[？?]/.test(t);
+  const el = $('#title-count');
+  el.textContent = `${n} 字${hasQ ? '' : ' · 缺反问句'}`;
+  el.style.color = n > 15 ? 'var(--err)' : 'var(--ink3)';
+}
+titleCount();
+
+['#f-title', '#f-digest', '#f-author'].forEach(sel => {
+  $(sel).addEventListener('input', () => { dirty = true; if (sel === '#f-title') titleCount(); });
+});
+md.addEventListener('input', () => { dirty = true; });
+
+function payload() {
+  return {
+    title: $('#f-title').value,
+    digest: $('#f-digest').value,
+    author: $('#f-author').value,
+    markdown: md.value,
+  };
+}
+
+/* ---------------- 状态渲染（局部刷新，不跳页） ---------------- */
+const STATUS_TEXT = { draft: '草稿中', generating: '生成中', failed: '生成失败', pushed: '已进草稿箱', published: '已发布' };
+const STATUS_CLS = { draft: '', generating: 'warn', failed: 'err', pushed: 'blue', published: 'green' };
+
+function renderStatus() {
+  const b = $('#badge');
+  b.textContent = STATUS_TEXT[state.status] || state.status;
+  b.className = 'badge ' + (STATUS_CLS[state.status] || '');
+  if (state.media_id) b.title = 'media_id: ' + state.media_id;
+}
+
+function renderLog() {
+  $('#log').textContent = state.log || '（暂无）';
+  $('#log').scrollTop = $('#log').scrollHeight;
+}
+
+function applyState(s, opts = {}) {
+  if (!s) return;
+  state = s;
+  renderStatus();
+  renderLog();
+  renderImages();
+  if (s.cover_url) $('#cover-img').src = s.cover_url;
+  if (opts.syncMarkdown && typeof s.markdown === 'string') {
+    md.value = s.markdown;
+    dirty = false;
+  }
+  if (opts.syncFields) {
+    if (s.title) $('#f-title').value = s.title;
+    $('#f-digest').value = s.digest || '';
+    $('#f-author').value = s.author || '';
+    titleCount();
+  }
+  if (s.checks) renderChecks(s.checks);
+}
+
+/* ---------------- 保存 / 预览 ---------------- */
+async function save(quiet) {
+  const btn = $('#btn-save');
+  if (!quiet) busy(btn, true, '保存中…');
+  try {
+    const r = await api(`/api/article/${AID}/save`, payload());
+    dirty = false;
+    lastSaved = new Date().toTimeString().slice(0, 5);
+    $('#saved-at').textContent = '已保存 ' + lastSaved;
+    state.log = r.article && r.article.log ? r.article.log : state.log;
+    renderChecks(r.checks);
+    if (!quiet) toast('已保存', 'ok');
+    return r;
+  } catch (err) {
+    toast(err.message, 'err');
+    throw err;
+  } finally {
+    if (!quiet) busy(btn, false);
+  }
+}
+
+async function refreshPreview() {
+  const btn = $('#btn-rerender');
+  busy(btn, true, '渲染中…');
+  try {
+    const r = await api(`/api/article/${AID}/preview`, {
+      ...payload(),
+      theme: $('#preview-theme').value,
+    });
+    previewInto(previewFrame, r.html);
+    renderChecks(r.checks, r.info, r.blockers, r.pending);
+    bindPreviewScroll();
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+}
+
+/* ---------------- 两个方向的比例滚动联动 ---------------- */
+let syncing = false;
+function bindPreviewScroll() {
+  try {
+    const win = previewFrame.contentWindow;
+    win.onscroll = () => {
+      if (syncing) return;
+      syncing = true;
+      const max = win.document.body.scrollHeight - win.innerHeight;
+      const pct = max > 0 ? win.scrollY / max : 0;
+      md.scrollTop = pct * (md.scrollHeight - md.clientHeight);
+      setTimeout(() => { syncing = false; }, 60);
+    };
+  } catch (e) { /* 跨域/未就绪，忽略 */ }
+}
+md.addEventListener('scroll', () => {
+  if (syncing) return;
+  syncing = true;
+  try {
+    const win = previewFrame.contentWindow;
+    const pct = md.scrollTop / Math.max(1, md.scrollHeight - md.clientHeight);
+    const max = win.document.body.scrollHeight - win.innerHeight;
+    win.scrollTo(0, pct * Math.max(0, max));
+  } catch (e) { /* ignore */ }
+  setTimeout(() => { syncing = false; }, 60);
+});
+
+/* ---------------- 自检面板 ---------------- */
+function renderChecks(c, info, blockers, pending) {
+  if (!c) return;
+  const st = c.structure || {};
+  const bad = (c.blockers || []).concat(blockers || []);
+  let h = `<div class="checkline">
+    <span>正文 <b>${c.words}</b> 汉字</span>
+    <span>标题 <b>${c.title_length}</b> 字</span>
+    <span>小标题 <b>${st.subheads || 0}</b></span>
+    <span>加粗 <b>${st.bold || 0}</b></span>
+    <span>段落 <b>${st.paragraphs || 0}</b></span>
+    <span>标签 <b>${c.tags_count || 0}</b></span>
+  </div>`;
+  if (bad.length) {
+    h += '<div class="alert err" style="font-size:12.5px;margin-bottom:8px"><b>必须处理</b><ul class="list">'
+      + bad.map(x => `<li>${esc(x)}</li>`).join('') + '</ul></div>';
+  } else {
+    h += '<div class="alert ok" style="font-size:12.5px;margin-bottom:8px">可以提交草稿（硬指标全过）</div>';
+  }
+  if (c.banned && c.banned.length) {
+    h += '<div class="alert warn" style="font-size:12.5px;margin-bottom:8px">违禁词：'
+      + c.banned.map(b => `<code>${esc(b.word)}</code>`).join(' ') + '</div>';
+  }
+  if (c.warnings && c.warnings.length) {
+    h += '<div style="font-size:12.5px;color:var(--ink2)"><b>建议</b><ul class="list">'
+      + c.warnings.map(x => `<li>${esc(x)}</li>`).join('') + '</ul></div>';
+  }
+  if (pending) h += `<div class="alert info" style="font-size:12.5px;margin-bottom:8px">${esc(pending)}</div>`;
+  if (info) {
+    h += `<div class="note" style="margin-top:10px">HTML：${info.img} 张图 ·
+      ${info.mmbiz_img} 张已是微信图 · class ${info.class_count} · style 块 ${info.style_block} · h1 ${info.h1}</div>`;
+  }
+  $('#checks').innerHTML = h;
+}
+
+/* ---------------- 配图区：改图注 / 换一张 / 移除 / 拖拽排序 ---------------- */
+function renderImages() {
+  const meta = (state.images_meta || []).filter(m => m && m.url);
+  $('#img-count').textContent = meta.length ? `${meta.length} 张` : '';
+  const box = $('#imgs');
+  if (!meta.length) {
+    box.innerHTML = '<div class="empty" style="padding:18px;grid-column:1/-1">还没有配图，点「重新抓图」</div>';
+  } else {
+    box.innerHTML = meta.map((m, i) => `
+      <figure class="imgcard" draggable="true" data-idx="${i}" data-url="${esc(m.url)}">
+        <img src="{{ P }}${esc(m.url)}" alt="" />
+        ${(m.score !== undefined && Number(m.score) <= 0)
+          ? '<span class="badge warn" style="font-size:10px;margin-bottom:4px">相关性低</span>' : ''}
+        <input class="capin" value="${esc(m.caption || '')}" placeholder="图注（留空则不显示）" />
+        <div class="note" style="font-size:10.5px">${m.width}×${m.height} · ${esc(m.site || m.source || '')}</div>
+        <div class="btnrow" style="gap:4px">
+          <button data-ai="${esc(m.url)}" type="button" class="mini">AI 重生成</button>
+          <button data-swap="${esc(m.url)}" type="button" class="mini">换一张</button>
+          <button data-rm="${esc(m.url)}" type="button" class="mini">移除</button>
+        </div>
+      </figure>`).join('');
+  }
+  bindImageEvents();
+  fillCoverSources(meta);
+}
+
+function bindImageEvents() {
+  $$('[data-rm]').forEach(b => b.addEventListener('click', async () => {
+    busy(b, true, '…');
+    try {
+      const r = await api(`/api/article/${AID}/images/remove`, { url: b.dataset.rm });
+      applyState(r.state, { syncMarkdown: true });
+      refreshPreview();
+      toast('已移除', 'ok');
+    } catch (err) { toast(err.message, 'err'); busy(b, false); }
+  }));
+
+  $$('[data-swap]').forEach(b => b.addEventListener('click', async () => {
+    busy(b, true, '找图中…');
+    try {
+      const r = await api(`/api/article/${AID}/images/swap`, { url: b.dataset.swap });
+      applyState(r.state, { syncMarkdown: true });
+      refreshPreview();
+      toast('已换一张', 'ok');
+    } catch (err) { toast(err.message, 'err'); busy(b, false); }
+  }));
+
+  // ---- AI 重生成：展开一个「补充要求」输入框，确认后原地替换这张图 ----
+  $$('[data-ai]').forEach(b => b.addEventListener('click', () => {
+    const card = b.closest('.imgcard');
+    let box = card.querySelector('.aiask');
+    if (box) { box.querySelector('input').focus(); return; }
+    box = document.createElement('div');
+    box.className = 'aiask';
+    box.innerHTML = `
+      <input type="text" placeholder="补充要求（可留空）。如：换成侧面、白天、穿外套、远一点" />
+      <div class="btnrow" style="gap:4px;margin-top:4px">
+        <button type="button" class="mini go">生成并替换</button>
+        <button type="button" class="mini cancel">取消</button>
+      </div>
+      <div class="note aiask-hint" style="font-size:10.5px">按这张图旁边的文案当场景，每张约 45~60 秒</div>`;
+    card.appendChild(box);
+    const inp = box.querySelector('input');
+    const go = box.querySelector('.go');
+    box.querySelector('.cancel').onclick = () => box.remove();
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go.click(); } });
+    go.onclick = async () => {
+      const extra = inp.value.trim();
+      const hint = box.querySelector('.aiask-hint');
+      const t0 = Date.now();
+      busy(go, true, '生成中…');
+      inp.disabled = true;
+      const timer = setInterval(() => {
+        hint.textContent = `正在重新生成，已等 ${Math.round((Date.now() - t0) / 1000)} 秒（一般 45~60 秒）…`;
+      }, 1000);
+      try {
+        const r = await api(`/api/article/${AID}/images/regen_ai`,
+                            { url: card.dataset.url, extra });
+        applyState(r.state, { syncMarkdown: true });
+        refreshPreview();
+        toast('配图已重新生成', 'ok');
+      } catch (err) {
+        toast(err.message, 'err');
+        busy(go, false);
+        inp.disabled = false;
+        hint.textContent = '失败可以改改要求再试';
+      } finally {
+        clearInterval(timer);
+      }
+    };
+    inp.focus();
+  }));
+
+  $$('.capin').forEach(inp => {
+    const save = async () => {
+      const card = inp.closest('.imgcard');
+      try {
+        const r = await api(`/api/article/${AID}/images/caption`,
+                            { url: card.dataset.url, caption: inp.value.trim() });
+        applyState(r.state, { syncMarkdown: true });
+        refreshPreview();
+      } catch (err) { toast(err.message, 'err'); }
+    };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+    inp.addEventListener('change', save);
+  });
+
+  let dragUrl = '';
+  $$('.imgcard').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+      dragUrl = card.dataset.url;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('over'); });
+    card.addEventListener('dragleave', () => card.classList.remove('over'));
+    card.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      card.classList.remove('over');
+      const targetUrl = card.dataset.url;
+      if (!dragUrl || dragUrl === targetUrl) return;
+      const meta = (state.images_meta || []).filter(m => m && m.url);
+      const urls = meta.map(m => m.url);
+      const from = urls.indexOf(dragUrl), to = urls.indexOf(targetUrl);
+      if (from < 0 || to < 0) return;
+      urls.splice(to, 0, urls.splice(from, 1)[0]);
+      try {
+        const r = await api(`/api/article/${AID}/images/reorder`, { urls });
+        applyState(r.state, { syncMarkdown: true });
+        refreshPreview();
+        toast('顺序已更新', 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+    });
+  });
+}
+
+function fillCoverSources(meta) {
+  const sel = $('#cover-src');
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">纯色底 + 标题</option>' +
+    meta.map(m => `<option value="${esc(m.url.split('/').pop())}">${esc(m.caption || m.name || '配图')}</option>`).join('');
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+  $('#cover-src-hint').textContent = meta.length ? '默认用配图做底图' : '无配图，用纯色底';
+}
+
+/* ---------------- 顶部固定条：小按钮样式 ---------------- */
+$('#btn-save').addEventListener('click', () => save());
+$('#btn-rerender').addEventListener('click', refreshPreview);
+$('#preview-theme').addEventListener('change', refreshPreview);
+
+md.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
+});
+
+/* ---------------- 预览宽度切换 ---------------- */
+const WIDTHS = [320, 375, 414];
+let curWidth = 375;
+function renderWidths() {
+  $('#widths').innerHTML = WIDTHS.map(w =>
+    `<button data-w="${w}" type="button" class="mini"
+      style="${w === curWidth ? 'background:var(--brand);border-color:var(--brand);color:#fff' : ''}">${w}</button>`
+  ).join('');
+  $$('[data-w]').forEach(b => b.addEventListener('click', () => {
+    curWidth = parseInt(b.dataset.w, 10);
+    previewFrame.style.width = curWidth + 'px';
+    renderWidths();
+  }));
+}
+previewFrame.style.width = curWidth + 'px';
+renderWidths();
+
+/* ---------------- 插图 ---------------- */
+$('#file-img').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('file', f);
+  $('#img-hint').textContent = '上传中…';
+  try {
+    const r = await fetch(withPrefix('/api/upload'), { method: 'POST', body: fd }).then(x => x.json());
+    if (r.ok === false) throw new Error(r.error);
+    insertImage(r.url, r.name);
+    $('#img-hint').textContent = r.reject_hint ? '已插入，但提示：' + r.reject_hint
+      : `已插入 ${r.width}×${r.height}`;
+  } catch (err) { $('#img-hint').textContent = err.message; toast(err.message, 'err'); }
+  e.target.value = '';
+});
+
+$('#btn-url-img').addEventListener('click', async () => {
+  const url = prompt('图片地址（http/https）：');
+  if (!url) return;
+  $('#img-hint').textContent = '下载中…';
+  try {
+    const r = await api('/api/upload_url', { url });
+    insertImage(r.url, r.name);
+    $('#img-hint').textContent = r.reject_hint ? '已插入，但提示：' + r.reject_hint
+      : `已插入 ${r.width}×${r.height}`;
+  } catch (err) { $('#img-hint').textContent = err.message; toast(err.message, 'err'); }
+});
+
+function insertImage(url, name) {
+  const alt = prompt('图注（补信息，不复述正文；留空则不显示）：', '') || '';
+  const snippet = `\n\n![${alt}](${url})\n\n`;
+  const pos = md.selectionStart ?? md.value.length;
+  md.value = md.value.slice(0, pos) + snippet + md.value.slice(pos);
+  dirty = true;
+  save(true).then(refreshPreview).catch(() => {});
+}
+
+/* ---------------- AI 配图 / AI 封面 ---------------- */
+$('#btn-ai-img').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const topic = prompt('这张图想表达什么？（默认用当前标题，可改成更具体的画面）',
+                       $('#f-title').value || '') || '';
+  if (!topic.trim()) return;
+  busy(btn, true, 'AI 生图中…');
+  $('#img-hint').textContent = '正在生成，可能要十几秒…';
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/gen_image`, { kind: 'inline', topic });
+    insertImage(r.url, '');
+    $('#img-hint').textContent = 'AI 配图已插入';
+    toast('AI 配图已插入', 'ok');
+  } catch (err) { $('#img-hint').textContent = err.message; toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-ai-cover').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, 'AI 封面生成中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/gen_image`, {
+      kind: 'cover', topic: $('#f-title').value || '',
+    });
+    const r2 = await api(`/api/article/${AID}/cover`, { source: r.url });
+    applyState(r2.state);
+    toast('AI 封面已生成', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+/* ---------------- 配图重抓 ---------------- */
+$('#btn-fetch-imgs').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '抓图中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/fetch_images`, {
+      want: parseInt($('#img-want').value, 10) || 4,
+    });
+    if (r.state) applyState(r.state, { syncMarkdown: true });
+    refreshPreview();
+    toast(r.images && r.images.length ? `抓到 ${r.images.length} 张` : (r.note || '没抓到合适的图'),
+          r.images && r.images.length ? 'ok' : 'err');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+/* ---------------- 标题建议 / 去味 / 重写 ---------------- */
+$('#btn-titles').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '想标题…');
+  try {
+    const r = await api(`/api/article/${AID}/titles`, {});
+    $('#title-suggest').innerHTML = r.titles.map(t =>
+      `<div data-title="${esc(t)}" class="sugtitle">${esc(t)}</div>`).join('');
+    $$('[data-title]').forEach(el => el.addEventListener('click', () => {
+      $('#f-title').value = el.dataset.title;
+      titleCount(); dirty = true;
+      $('#title-suggest').innerHTML = '';
+    }));
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-humanize').addEventListener('click', async (e) => {
+  if (!confirm('会整体改写正文（事实不动，只去 AI 腔）。继续？')) return;
+  const btn = e.currentTarget;
+  busy(btn, true, '改写中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/humanize`, {});
+    md.value = r.markdown; dirty = false;
+    await refreshPreview();
+    toast('已改写', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+/* ---------------- AI 排版优化 ---------------- */
+$('#btn-layout').addEventListener('click', async (e) => {
+  if (!confirm('AI 会按这个号的平台和人设重排正文结构（拆长段、调小标题、调加粗），'
+               + '事实和语气不动。继续？')) return;
+  const btn = e.currentTarget;
+  busy(btn, true, '优化排版中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/optimize_layout`, {});
+    md.value = r.markdown; dirty = false;
+    await refreshPreview();
+    toast('排版已优化', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-regen').addEventListener('click', async (e) => {  if (!confirm('会覆盖当前正文，确定重写？')) return;
+  const extra = prompt('这次想强调什么？（可留空）', '') || '';
+  const btn = e.currentTarget;
+  busy(btn, true, '重写中…');
+  try {
+    const r = await api(`/api/article/${AID}/regenerate`, { extra });
+    applyState({ ...state, ...r.article, markdown: r.article.markdown },
+               { syncMarkdown: true, syncFields: true });
+    const s = await api(`/api/article/${AID}/state`, undefined, 'GET');
+    applyState(s.state, { syncMarkdown: true, syncFields: true });
+    await refreshPreview();
+    toast('已重写', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+/* ---------------- 封面 ---------------- */
+$('#btn-cover').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '生成中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/cover`, { source: $('#cover-src').value });
+    applyState(r.state);
+    toast('封面已更新', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+/* ---------------- 建草稿 / 发布 / 删除 ---------------- */
+on('#btn-push', 'click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '提交中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/push`, {});
+    applyState(r.state, { syncMarkdown: true });
+    const v = r.verify || {};
+    toast('已进草稿箱', 'ok');
+    renderChecks(state.checks, {
+      img: v.img, mmbiz_img: v.mmbiz_img, class_count: v.class_count,
+      style_block: v.style_block, h1: v.h1,
+    }, v.ok ? [] : (v.problems || []));
+  } catch (err) {
+    toast(err.message, 'err');
+    try { const s = await api(`/api/article/${AID}/state`, undefined, 'GET'); applyState(s.state); } catch (e2) {}
+  } finally { busy(btn, false); }
+});
+
+/* ---------------- 头条号草稿 ---------------- */
+let ttTimer = null;
+
+function ttPollStop() {
+  if (ttTimer) { clearInterval(ttTimer); ttTimer = null; }
+}
+
+function renderTt(t) {
+  const line = $('#tt-status'), box = $('#tt-login'), msg = $('#tt-login-msg'), qr = $('#tt-qr');
+  if (!line || !box) return;                 // 非头条稿件没有这块，直接别管
+  if (!t) { line.textContent = '头条登录态查不到'; return; }
+  if (!t.installed) {
+    line.textContent = '⚠ ' + (t.dep_error || '服务器没装 playwright');
+    box.style.display = 'none';
+    return;
+  }
+  const lg = t.login || {};
+  const scanning = lg.state === 'starting' || lg.state === 'waiting';
+  let s;
+  if (t.logged_in) {
+    s = '✅ 已登录' + (t.saved_at ? '（' + t.saved_at + ' 存的）' : '')
+      + (t.expires_at ? '，有效期到 ' + t.expires_at : '（会话级 Cookie，重启浏览器可能失效）');
+  } else if (t.expired) {
+    s = '⚠ 登录态过期了，重新扫一下码';
+  } else {
+    s = '还没登录头条号';
+  }
+  if (scanning) s += ' · ' + (lg.message || '等扫码') + '（' + (lg.elapsed || 0) + 's）';
+  else if (lg.state === 'timeout' || lg.state === 'error') s += ' · ' + (lg.message || lg.state);
+  line.textContent = s;
+
+  box.style.display = (scanning || !t.logged_in) ? '' : 'none';
+  msg.textContent = lg.message || '点「扫码登录」生成二维码，每 3 秒自动刷新';
+  if (t.qr) {
+    qr.src = P + t.qr;
+    qr.style.visibility = 'visible';
+  } else {
+    qr.style.visibility = 'hidden';
+  }
+}
+
+async function ttRefresh() {
+  try {
+    const r = await api(`/api/toutiao/status?account_id=${ACC_ID}`, undefined, 'GET');
+    renderTt(r.toutiao);
+    return r.toutiao;
+  } catch (err) {
+    const line = $('#tt-status');
+    if (line) line.textContent = '头条登录态查不到：' + err.message;
+    return null;
+  }
+}
+
+function ttPollStart() {
+  ttPollStop();
+  ttTimer = setInterval(async () => {
+    const t = await ttRefresh();
+    if (!t) { ttPollStop(); return; }
+    const st = (t.login || {}).state;
+    if (t.logged_in) { ttPollStop(); toast('头条登录成功', 'ok'); }
+    else if (['ok', 'timeout', 'error', 'cancelled'].includes(st)) ttPollStop();
+  }, 3000);
+}
+
+on('#btn-tt-draft', 'click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '投递中…');
+  try {
+    await save(true);
+    const r = await api(`/api/article/${AID}/toutiao_draft`, {});
+    applyState(r.state);
+    const res = r.result || {};
+    const v = res.verify || {};
+    toast('已存进头条草稿箱' + (res.images ? `（${res.images} 张图进正文）` : ''), 'ok');
+    if ((res.images_failed || 0) > 0) {
+      toast(`有 ${res.images_failed} 张图没进正文，草稿里回头补`, 'warn');
+    }
+    ttRefresh();
+  } catch (err) {
+    toast(err.message, 'err');
+    // 头条常见的两种「不是报错、是要人去处理」：没登录、要绑手机号。
+    // 后端都会把原因写在 error 里，这里直接顶到卡片上，别只弹一个 2.6 秒就消失的 toast。
+    const box = $('#tt-alert');
+    if (box) { box.textContent = err.message; box.style.display = ''; }
+    const t = await ttRefresh();
+    if (t && !t.logged_in && $('#tt-login')) $('#tt-login').style.display = '';
+    try { const s = await api(`/api/article/${AID}/state`, undefined, 'GET'); applyState(s.state); } catch (e2) {}
+  } finally { busy(btn, false); }
+});
+
+on('#btn-tt-login', 'click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '打开中…');
+  try {
+    await api('/api/toutiao/login', { account_id: ACC_ID });
+    await ttRefresh();
+    ttPollStart();
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally { busy(btn, false); }
+});
+
+on('#btn-tt-cancel', 'click', async () => {
+  ttPollStop();
+  try {
+    await api('/api/toutiao/login/cancel', {});
+    await ttRefresh();
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+on('#btn-tt-logout', 'click', async () => {
+  if (!confirm('忘掉本机保存的头条登录态？（头条账号本身不受影响）')) return;
+  ttPollStop();
+  try {
+    const r = await api('/api/toutiao/logout', { account_id: ACC_ID });
+    renderTt(r.toutiao);
+    toast('已清除本机登录态', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+if (PLATFORM === 'toutiao') {                 // 头条稿件才查登录态，别的平台别发无谓请求
+  if ({{ (article.tt_at or '')|tojson }}) {
+    $('#tt-last').textContent = '上次存头条草稿：' + {{ (article.tt_at or '')|tojson }};
+  }
+  ttRefresh();
+}
+
+on('#pub-confirm', 'change', (e) => {
+  $('#btn-publish').disabled = !e.target.checked;
+});
+
+on('#btn-publish', 'click', async (e) => {
+  if (!confirm('正式群发到「{{ account.name }}」，发布后不可撤回。确定？')) return;
+  const btn = e.currentTarget;
+  busy(btn, true, '发布中…');
+  try {
+    const r = await api(`/api/article/${AID}/publish`, { confirm: true });
+    toast('已提交发布', 'ok');
+    const s = await api(`/api/article/${AID}/state`, undefined, 'GET');
+    applyState(s.state);
+  } catch (err) { toast(err.message, 'err'); busy(btn, false); }
+});
+
+on('#btn-del-draft', 'click', async (e) => {
+  if (!confirm('删除公众号草稿箱里的这一篇？（不影响本地稿件）')) return;
+  try {
+    await api(`/api/article/${AID}/delete_draft`, {});
+    const s = await api(`/api/article/${AID}/state`, undefined, 'GET');
+    applyState(s.state);
+    toast('已删除', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+$('#btn-del-article').addEventListener('click', async () => {
+  if (!confirm('从工作台删除这篇稿？（不影响公众号草稿箱）')) return;
+  try {
+    await api(`/api/article/${AID}/delete`, {});
+    toast('已删除', 'ok');
+    setTimeout(() => { location.href = P + '/'; }, 500);
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+/* ---------------- 生成中模式：锁编辑 + 实时进度 ---------------- */
+const EDITABLE = [
+  '#f-title', '#f-digest', '#f-author', '#f-markdown', '#img-want',
+  '#btn-save', '#btn-rerender', '#btn-push', '#btn-tt-draft', '#btn-titles', '#btn-humanize',
+  '#btn-layout',
+  '#btn-regen', '#btn-fetch-imgs', '#btn-cover', '#btn-publish', '#btn-del-draft',
+  '#btn-del-article', '#file-img', '#btn-url-img', '#pub-confirm',
+  '#btn-ai-img', '#btn-ai-cover',
+];
+
+function setEditingEnabled(on) {
+  EDITABLE.forEach(sel => { const el = $(sel); if (el) el.disabled = !on; });
+  $$('.imgcard button, .imgcard .capin').forEach(el => { el.disabled = !on; });
+}
+
+function stageText(p) {
+  const map = {
+    queued: '排队中…', writing: '正在写稿…', images: '正在抓配图…',
+    done: '收尾中…', failed: '生成失败',
+  };
+  return map[p.stage] || '生成中…';
+}
+
+function enterGenerating() {
+  $('#genbox').style.display = '';
+  setEditingEnabled(false);
+  genStart = Date.now();
+  try {
+    const doc = previewFrame.contentDocument;
+    doc.open();
+    doc.write('<body style="display:flex;align-items:center;justify-content:center;height:100%;'
+      + 'font-family:-apple-system,sans-serif;color:#8b939d;font-size:14px;margin:0">'
+      + '正在生成，完成后这里会显示实时排版效果…</body>');
+    doc.close();
+  } catch (e) {}
+  poll();
+}
+
+async function poll() {
+  clearTimeout(pollTimer);
+  let p = null;
+  try {
+    const r = await api('/api/article/' + AID + '/progress', undefined, 'GET');
+    p = r.progress;
+  } catch (e) {
+    pollTimer = setTimeout(poll, 2500);      // 网络抖动就继续等
+    return;
+  }
+  $('#genlog').textContent = p.log || '';
+  $('#genlog').scrollTop = $('#genlog').scrollHeight;
+  $('#genstage').textContent = stageText(p);
+  $('#gentime').textContent = Math.round((Date.now() - genStart) / 1000) + 's';
+  if (p.title) { $('#f-title').value = p.title; titleCount(); }
+
+  if (p.status === 'generating') {
+    // 兜底：超过 5 分钟还没完，就别无限轮询了
+    if (Date.now() - genStart > 300000) {
+      $('#genbox').style.display = 'none';
+      setEditingEnabled(true);
+      toast('生成时间过长，可能已中断。可以点「重新写一篇」', 'err');
+      return;
+    }
+    pollTimer = setTimeout(poll, 1500);
+    return;
+  }
+
+  $('#genbox').style.display = 'none';
+  setEditingEnabled(true);
+  if (p.status === 'failed') {
+    toast('生成失败：' + (p.error || '未知原因'), 'err');
+  } else {
+    toast('生成完成', 'ok');
+  }
+  try {
+    const s = await api('/api/article/' + AID + '/state', undefined, 'GET');
+    applyState(s.state, { syncMarkdown: true, syncFields: true });
+  } catch (e) {}
+  refreshPreview();
+}
+
+/* ---------------- 启动 ---------------- */
+renderStatus(); renderLog(); renderImages();
+if (GEN_STATUS === 'generating') {
+  enterGenerating();
+} else {
+  refreshPreview();
+}
+window.addEventListener('beforeunload', (e) => {
+  if (dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% block title %}账号 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+
+<h1>账号</h1>
+<p class="sub">按<b>平台</b>分开管理：公众号走接口，头条号走浏览器扫码登录，大众点评还没接。
+每个号可以有自己的<b>人设</b>、<b>写作规范</b>、<b>排版主题</b>和<b>配图数量</b>；
+AppSecret 加密存本地库，界面上只显示掩码。</p>
+
+<div class="stats" style="margin-bottom:16px">
+  {% for key, p in platforms.items() %}
+  <a class="stat" href="{{ P }}/?platform={{ key }}" style="text-decoration:none">
+    <b>{{ grouped.get(key, [])|length }}</b><span>{{ p.label }}</span>
+  </a>
+  {% endfor %}
+</div>
+
+{% if not accounts %}
+<div class="alert info">
+  还没有账号，先在下面添加一个。公众号要在后台把服务器公网 IP 加进「IP白名单」，
+  否则接口返回 40164；头条号添加完点「扫码登录」就行。
+</div>
+{% endif %}
+
+{% if legacy_tt %}
+<div class="alert info">
+  检测到本机还有一份老版本的头条登录态（<code>data/toutiao_state.json</code>），
+  但还没有头条号账号。按下面「头条号」区加一个账号，它会自动认领这份登录态，不用重扫。
+</div>
+{% endif %}
+
+<details class="card" {{ 'open' if not accounts }}>
+  <summary style="cursor:pointer;font-weight:600;font-size:15px">＋ 添加账号</summary>
+  <div style="margin-top:16px">
+    <label class="f"><span>选个博主类型（预设人设和写作规范，选完还能改）</span></label>
+    <div class="preset-grid" id="preset-grid">
+      {% for pr in persona_presets %}
+      <div class="preset-card" data-preset="{{ pr.id }}">
+        <div class="pe">{{ pr.emoji }}</div>
+        <div class="pl">{{ pr.label }}</div>
+        <div class="pd">{{ pr.desc }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="grid2">
+      <div>
+        <label class="f"><span>平台</span>
+          <select id="n-platform">
+            {% for key, p in platforms.items() %}
+            <option value="{{ key }}">{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="f"><span>展示名（团队内部用）</span><input type="text" id="n-name" placeholder="噜噜谈科技" /></label>
+        <div data-only="wechat">
+          <label class="f"><span>AppID</span><input type="text" id="n-appid" placeholder="wx 开头" /></label>
+          <label class="f"><span>AppSecret</span><input type="password" id="n-secret" placeholder="公众号后台生成" /></label>
+        </div>
+        <label class="f"><span>默认作者署名</span><input type="text" id="n-author" placeholder="噜噜" /></label>
+        <label class="f"><span>选题领域（逗号分隔，用于热搜筛选）</span>
+          <input type="text" id="n-domain" placeholder="科技, AI, 手机, 芯片, 互联网, 数码" /></label>
+      </div>
+      <div>
+        <label class="f"><span>人设（这个号是谁、怎么说话）</span>
+          <textarea id="n-persona" rows="6"
+            placeholder="可以从上面选一个预设自动填，也可以自己写。"></textarea>
+        </label>
+        <div class="inline" style="margin-bottom:12px">
+          <label class="f"><span>排版主题</span>
+            <select id="n-theme">
+              <option value="">（跟随全局）</option>
+              {% for tk, tv in themes.items() %}
+              <option value="{{ tk }}">{{ tv.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="f" style="max-width:130px"><span>配图数量</span>
+            <input type="number" id="n-images" min="0" max="8" value="4" /></label>
+        </div>
+        <label class="f"><span>专属写作规范（留空用全局）</span>
+          <textarea id="n-style" rows="4" placeholder="预设会自动填，留空则用「设置」里的全局规范"></textarea>
+        </label>
+        <label class="check"><input type="checkbox" id="n-cover" checked /> 封面用抓到的网图做底图</label>
+        <label class="check"><input type="checkbox" id="n-default" /> 设为该平台的默认账号</label>
+        <label class="check" data-only="wechat"><input type="checkbox" id="n-publish" /> 允许「正式发布」（没有发布权限的号别勾）</label>
+        <p class="note" id="n-hint" style="margin:8px 0 0"></p>
+        <button class="primary" id="btn-add" type="button" style="margin-top:10px">添加</button>
+      </div>
+    </div>
+    <p class="note" style="margin-top:10px">
+      写作规范不填就用「设置」里的全局规范；人设会追加在规范最前面，两者可以叠加。
+      头条号不用填 AppID / AppSecret，添加完在下面的卡片上点「扫码登录」。
+    </p>
+  </div>
+</details>
+
+{% for key, p in platforms.items() %}
+{% set list = grouped.get(key, []) %}
+<h2 style="margin:22px 0 10px;font-size:16px;display:flex;align-items:center;gap:8px">
+  {{ p.label }}
+  <span class="badge">{{ list|length }}</span>
+  {% if p.status != 'ready' %}<span class="badge warn">未接入</span>{% endif %}
+</h2>
+<p class="note" style="margin:-4px 0 12px">{{ p.how }}</p>
+
+{% if not list %}
+<div class="card tight"><div class="empty" style="padding:14px">还没有{{ p.label }}账号</div></div>
+{% endif %}
+
+{% for a in list %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+    <div style="flex:1;min-width:240px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b style="font-size:15px">{{ a.name }}</b>
+        <span class="badge blue">{{ p.label }}</span>
+        {% if a.is_default %}<span class="badge green">默认</span>{% endif %}
+        {% if a.allow_publish %}<span class="badge warn">允许发布</span>{% endif %}
+        <span class="badge">{{ themes.get(a.theme, {}).get('label', a.theme) if a.theme else '跟随全局主题' }}</span>
+        <span class="badge">配图 {{ a.image_count or '跟随全局' }}</span>
+        {% if key == 'toutiao' %}
+          {% set tt = tt_status.get(a.id) or {} %}
+          {% if tt.logged_in %}<span class="badge green">已登录</span>
+          {% elif tt.expired %}<span class="badge err">登录态过期</span>
+          {% else %}<span class="badge warn">未登录</span>{% endif %}
+        {% endif %}
+      </div>
+      {% if key == 'wechat' %}
+      <div class="note" style="margin-top:4px;font-family:monospace">{{ a.appid }}</div>
+      {% endif %}
+      {% if key == 'toutiao' %}
+        {% set tt = tt_status.get(a.id) or {} %}
+        <div class="note" style="margin-top:4px">
+          {% if tt.logged_in %}登录态存于本机，{{ tt.saved_at }} 存的{{ '，有效期到 ' + tt.expires_at if tt.expires_at else '（会话级 Cookie，重启浏览器可能要重扫）' }}
+          {% else %}还没扫码登录。发文只能由本机的浏览器会话执行，别人扫的码不能共用。{% endif %}
+        </div>
+      {% endif %}
+      {% if a.topic_domain %}<div class="note">领域：{{ a.topic_domain }}</div>{% endif %}
+      {% if a.persona %}<div class="note" style="margin-top:6px;white-space:pre-wrap">{{ a.persona[:200] }}{{ '…' if a.persona|length > 200 }}</div>{% endif %}
+      {% if a.note %}<div class="note">备注：{{ a.note }}</div>{% endif %}
+    </div>
+    <div class="btnrow" style="align-content:flex-start">
+      {% if key == 'wechat' %}
+      <button data-test="{{ a.id }}" type="button">体检</button>
+      <button data-toggle-pub="{{ a.id }}" data-val="{{ a.allow_publish }}" type="button">
+        {{ '关闭发布' if a.allow_publish else '允许发布' }}
+      </button>
+      {% endif %}
+      {% if key == 'toutiao' %}
+      <button data-tt-login="{{ a.id }}" type="button">扫码登录</button>
+      <button data-tt-logout="{{ a.id }}" type="button">忘掉登录态</button>
+      {% endif %}
+      <button data-def="{{ a.id }}" type="button">设为默认</button>
+      <button class="danger" data-del="{{ a.id }}" type="button">删除</button>
+    </div>
+  </div>
+
+  {% if key == 'toutiao' %}
+  <div data-tt-panel="{{ a.id }}" style="display:none;margin-top:14px;border-top:1px dashed var(--line);padding-top:14px">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
+      <img data-tt-qr="{{ a.id }}" alt="头条登录二维码"
+           style="width:200px;height:200px;border:1px solid var(--line);border-radius:8px;background:#fff;visibility:hidden" />
+      <div style="flex:1;min-width:220px">
+        <p class="note" data-tt-msg="{{ a.id }}" style="margin:0 0 8px">点「扫码登录」生成二维码</p>
+        <p class="note" style="margin:0">用<b>今日头条 App</b> 扫。登录态只存本机，
+          不会同步给别的设备。</p>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if key == 'dianping' %}
+  <div class="alert warn" style="margin-top:12px;font-size:12.5px">
+    大众点评还没接入：它没有对外发文/草稿接口，要做得单独写一套商家后台自动化。
+    现在这个账号只能用来区分平台、存放人设和写作规范，投递按钮还不会出现。
+  </div>
+  {% endif %}
+
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer;color:var(--blue);font-size:13px">编辑人设与规范</summary>
+    <div class="grid2" style="margin-top:12px">
+      <div>
+        <label class="f"><span>人设</span>
+          <textarea id="e-persona-{{ a.id }}" rows="6">{{ a.persona or '' }}</textarea></label>
+        <label class="f"><span>选题领域</span>
+          <input type="text" id="e-domain-{{ a.id }}" value="{{ a.topic_domain or '' }}" /></label>
+        <div class="inline">
+          <label class="f"><span>排版主题</span>
+            <select id="e-theme-{{ a.id }}">
+              <option value="" {{ 'selected' if not a.theme }}>（跟随全局）</option>
+              {% for tk, tv in themes.items() %}
+              <option value="{{ tk }}" {{ 'selected' if a.theme==tk }}>{{ tv.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="f" style="max-width:120px"><span>配图数量</span>
+            <input type="number" id="e-images-{{ a.id }}" min="0" max="8" value="{{ a.image_count or 0 }}" /></label>
+        </div>
+        <label class="f"><span>虚拟人物（AI 配图带这个人的长相；在「人物」页里建）</span>
+          <select id="e-char-{{ a.id }}">
+            <option value="0">不用人物（普通配图）</option>
+            {% for c in characters %}
+            <option value="{{ c.id }}" {{ 'selected' if (a.character_id or 0) == c.id }}>
+              {{ c.name }}{% if c.ref_images %}（参考图 {{ c.ref_images|length }} 张）{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="inline">
+          <label class="f"><span>内容模式</span>
+            <select id="e-mode-{{ a.id }}">
+              <option value="article" {{ 'selected' if (a.content_mode or 'article')=='article' }}>长文（公众号/头条正文）</option>
+              <option value="photo" {{ 'selected' if a.content_mode=='photo' }}>人物日常（几张图 + 几句口语）</option>
+            </select>
+          </label>
+          <label class="f" style="max-width:140px"><span>人物日常出几张图</span>
+            <input type="number" id="e-photos-{{ a.id }}" min="1" max="6" value="{{ a.photo_count or 3 }}" /></label>
+        </div>
+        <p class="note" style="margin:-4px 0 10px">
+          「人物日常」模式下，生成=用虚拟人物出 N 张图 + 2~4 句生活化短文案，标题也走口语化，
+          不写长文、不带加粗小标题。适合做纯晒人的虚拟人物号。<b>必须先绑人物。</b>
+        </p>
+        <label class="check"><input type="checkbox" id="e-cover-{{ a.id }}" {{ 'checked' if a.cover_from_image }} /> 封面用网图做底图</label>
+      </div>
+      <div>
+        <label class="f"><span>这个号专属的写作规范（留空用全局）</span>
+          <textarea id="e-style-{{ a.id }}" rows="12"
+            placeholder="留空 = 使用「设置」页里的全局写作规范">{{ a.style_prompt or '' }}</textarea></label>
+      </div>
+    </div>
+    <div class="btnrow" style="margin-top:10px">
+      <button class="primary" data-save="{{ a.id }}" type="button">保存这个号</button>
+      <span class="note">人设在规范之前生效；写作规范整段替换全局那份。</span>
+    </div>
+    <div class="alert err" data-err="{{ a.id }}" style="display:none;margin-top:10px"></div>
+  </details>
+
+  <div data-result-row="{{ a.id }}" style="display:none">
+    <pre class="note" style="white-space:pre-wrap;margin:10px 0 0" data-result="{{ a.id }}"></pre>
+  </div>
+</div>
+{% endfor %}
+{% endfor %}
+
+<div class="card tight">
+  <h2>各平台出问题先看这里</h2>
+  <ul class="list">
+    <li><b>公众号</b> <code>40164</code>：服务器 IP 不在白名单 → 后台「基本配置 → IP白名单」</li>
+    <li><b>公众号</b> <code>40125 / 40001</code>：AppSecret 不对 → 重新生成（会作废旧 token）</li>
+    <li><b>公众号</b> <code>48001</code>：没有发布权限 → 多数订阅号只能建草稿</li>
+    <li><b>头条号</b> 登录过期：点「扫码登录」重扫，登录态存本机 <code>data/toutiao_state_&lt;账号id&gt;.json</code></li>
+    <li><b>头条号</b> 提示「要绑定手机号」：头条的硬性要求，只能人工去绑一次，绑完再投递</li>
+    <li><b>大众点评</b>：未接入，见上面说明</li>
+  </ul>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ---------- 人设预设 ---------- */
+const PRESETS = {{ persona_presets|tojson }};
+$$('#preset-grid .preset-card').forEach(card => {
+  card.addEventListener('click', () => {
+    $$('#preset-grid .preset-card').forEach(c => c.classList.remove('on'));
+    card.classList.add('on');
+    const p = PRESETS.find(x => x.id === card.dataset.preset);
+    if (!p) return;
+    $('#n-persona').value = p.persona || '';
+    $('#n-domain').value = p.topic_domain || '';
+    $('#n-theme').value = p.theme || '';
+    $('#n-images').value = p.image_count || 4;
+    $('#n-style').value = p.style_prompt || '';
+    if (!$('#n-name').value.trim()) $('#n-name').value = p.label;
+    toast('已套用「' + p.label + '」预设，还能继续改', 'ok');
+  });
+});
+
+/* ---------- 添加账号：字段随平台变 ---------- */
+function syncPlatformFields() {
+  const p = $('#n-platform').value;
+  $$('[data-only]').forEach(el => {
+    el.style.display = (el.dataset.only === p) ? '' : 'none';
+  });
+  const hints = {
+    wechat: '公众号：填 AppID / AppSecret，能建草稿、能发布（看号有没有权限）。',
+    toutiao: '头条号：不用填 AppID，添加完在下面卡片上点「扫码登录」，之后只能从本机投递。',
+    dianping: '大众点评：暂未接入投递，只能存人设和规范。',
+  };
+  $('#n-hint').textContent = hints[p] || '';
+}
+$('#n-platform').addEventListener('change', syncPlatformFields);
+syncPlatformFields();
+
+$('#btn-add').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '添加中…');
+  try {
+    await api('/api/accounts', {
+      platform: $('#n-platform').value,
+      name: $('#n-name').value.trim(),
+      appid: $('#n-appid') ? $('#n-appid').value.trim() : '',
+      secret: $('#n-secret') ? $('#n-secret').value.trim() : '',
+      author: $('#n-author').value.trim(),
+      persona: $('#n-persona').value.trim(),
+      topic_domain: $('#n-domain').value.trim(),
+      theme: $('#n-theme').value,
+      image_count: parseInt($('#n-images').value, 10) || 0,
+      style_prompt: $('#n-style').value.trim(),
+      cover_from_image: $('#n-cover').checked,
+      is_default: $('#n-default').checked,
+      allow_publish: $('#n-publish').checked,
+    });
+    toast('已添加', 'ok');
+    location.reload();
+  } catch (err) { toast(err.message, 'err'); busy(btn, false); }
+});
+
+/* ---------- 通用：保存 / 体检 / 默认 / 发布开关 / 删除 ---------- */
+$$('[data-save]').forEach(b => b.addEventListener('click', async () => {
+  const id = b.dataset.save;
+  busy(b, true, '保存中…');
+  const box = document.querySelector(`[data-err="${id}"]`);
+  box.style.display = 'none';
+  try {
+    await api(`/api/accounts/${id}/update`, {
+      persona: $('#e-persona-' + id).value.trim(),
+      topic_domain: $('#e-domain-' + id).value.trim(),
+      theme: $('#e-theme-' + id).value,
+      image_count: parseInt($('#e-images-' + id).value, 10) || 0,
+      character_id: parseInt($('#e-char-' + id).value, 10) || 0,
+      content_mode: $('#e-mode-' + id).value,
+      photo_count: parseInt($('#e-photos-' + id).value, 10) || 3,
+      cover_from_image: $('#e-cover-' + id).checked,
+      style_prompt: $('#e-style-' + id).value.trim(),
+    });
+    toast('已保存', 'ok');
+    setTimeout(() => location.reload(), 600);
+  } catch (err) {
+    box.textContent = err.message; box.style.display = '';
+    toast(err.message, 'err');
+  } finally { busy(b, false); }
+}));
+
+$$('[data-test]').forEach(b => b.addEventListener('click', async () => {
+  const id = b.dataset.test;
+  busy(b, true, '体检…');
+  try {
+    const r = await api(`/api/accounts/${id}/test`, {});
+    const row = document.querySelector(`[data-result-row="${id}"]`);
+    const pre = document.querySelector(`[data-result="${id}"]`);
+    row.style.display = '';
+    pre.textContent = JSON.stringify(r.result, null, 2);
+    const okv = r.result && r.result.ok;
+    toast(okv ? '连接正常' : '有问题，看下方明细', okv ? 'ok' : 'err');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(b, false); }
+}));
+
+$$('[data-def]').forEach(b => b.addEventListener('click', async () => {
+  try { await api(`/api/accounts/${b.dataset.def}/update`, { is_default: true }); location.reload(); }
+  catch (err) { toast(err.message, 'err'); }
+}));
+
+$$('[data-toggle-pub]').forEach(b => b.addEventListener('click', async () => {
+  const on = b.dataset.val === '1';
+  try {
+    await api(`/api/accounts/${b.dataset.togglePub}/update`, { allow_publish: !on });
+    location.reload();
+  } catch (err) { toast(err.message, 'err'); }
+}));
+
+$$('[data-del]').forEach(b => b.addEventListener('click', async () => {
+  if (!confirm('删除这个账号？（稿件不会跟着删）')) return;
+  try { await api(`/api/accounts/${b.dataset.del}/delete`, {}); location.reload(); }
+  catch (err) { toast(err.message, 'err'); }
+}));
+
+/* ---------- 头条号：扫码登录 / 忘掉登录态 ---------- */
+const ttTimers = {};
+
+function renderTt(aid, t) {
+  const panel = document.querySelector(`[data-tt-panel="${aid}"]`);
+  const qr = document.querySelector(`[data-tt-qr="${aid}"]`);
+  const msg = document.querySelector(`[data-tt-msg="${aid}"]`);
+  if (!panel) return;
+  const lg = (t && t.login) || {};
+  const scanning = lg.state === 'starting' || lg.state === 'waiting';
+  panel.style.display = (scanning || (t && !t.logged_in)) ? '' : 'none';
+  msg.textContent = scanning
+    ? `正在等扫码（${lg.elapsed || 0}s）：${lg.message || ''}`
+    : (lg.message || '点「扫码登录」生成二维码，每 3 秒自动刷新');
+  if (t && t.qr) { qr.src = P + t.qr; qr.style.visibility = 'visible'; }
+  else { qr.style.visibility = 'hidden'; qr.removeAttribute('src'); }
+}
+
+async function ttStatus(aid) {
+  try {
+    const r = await api(`/api/toutiao/status?account_id=${aid}`, undefined, 'GET');
+    return r.toutiao;
+  } catch (e) { return null; }
+}
+
+$$('[data-tt-login]').forEach(b => b.addEventListener('click', async () => {
+  const aid = b.dataset.ttLogin;
+  busy(b, true, '打开中…');
+  try {
+    const r = await api('/api/toutiao/login', { account_id: parseInt(aid, 10) });
+    if (r.toutiao && r.toutiao.state === 'error') {
+      toast(r.toutiao.message || '打不开登录页', 'err');
+    }
+    const t = await ttStatus(aid);
+    renderTt(aid, t);
+    clearInterval(ttTimers[aid]);
+    ttTimers[aid] = setInterval(async () => {
+      const s = await ttStatus(aid);
+      renderTt(aid, s);
+      const st = (s && s.login && s.login.state) || '';
+      if (s && (s.logged_in || ['ok', 'timeout', 'error', 'cancelled'].includes(st))) {
+        clearInterval(ttTimers[aid]);
+        if (s.logged_in) { toast('登录成功', 'ok'); setTimeout(() => location.reload(), 800); }
+      }
+    }, 3000);
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(b, false); }
+}));
+
+$$('[data-tt-logout]').forEach(b => b.addEventListener('click', async () => {
+  const aid = b.dataset.ttLogout;
+  if (!confirm('忘掉这个头条号在本机的登录态？（头条账号本身不受影响）')) return;
+  try {
+    await api('/api/toutiao/logout', { account_id: parseInt(aid, 10) });
+    toast('已清除', 'ok');
+    setTimeout(() => location.reload(), 500);
+  } catch (err) { toast(err.message, 'err'); }
+}));
+</script>
+{% endblock %}

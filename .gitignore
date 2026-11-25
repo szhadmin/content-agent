@@ -1,0 +1,33 @@
+# 运行期数据：数据库、上传的图、封面、日志、加密密钥
+data/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+
+# 私有材料，不进仓库
+_ref/
+_ref_workbuddy_conversation.txt
+
+# 本地环境
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 现场截图、临时产物
+data/shots/
+*.log
+
+# 本地导出的调试文件
+_tmp_*

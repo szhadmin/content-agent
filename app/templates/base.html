@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}{{ APP_NAME }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ P }}/static/app.css" />
+</head>
+<body class="{% block bodyclass %}{% endblock %}">
+{% if user %}
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <span class="dot">稿</span>
+      <span>内容工作台</span>
+    </div>
+    <nav>
+      <a href="{{ P }}/" class="{{ 'on' if active=='home' }}"><span class="ic">▦</span>工作台</a>
+      <a href="{{ P }}/topics" class="{{ 'on' if active=='topics' }}"><span class="ic">🔥</span>选题库</a>
+      <a href="{{ P }}/drafts" class="{{ 'on' if active=='drafts' }}"><span class="ic">🗂</span>草稿箱</a>
+      <a href="{{ P }}/accounts" class="{{ 'on' if active=='accounts' }}"><span class="ic">👤</span>账号</a>
+      <a href="{{ P }}/characters" class="{{ 'on' if active=='characters' }}"><span class="ic">🎭</span>人物</a>
+      <a href="{{ P }}/settings" class="{{ 'on' if active=='settings' }}"><span class="ic">⚙</span>设置</a>
+    </nav>
+    <div class="sidefoot">
+      <div class="who">{{ user.display_name or user.username }}</div>
+      <a href="{{ P }}/logout" class="link-muted">退出</a>
+    </div>
+  </aside>
+  <main class="main">
+    {% block main %}{% endblock %}
+  </main>
+</div>
+{% else %}
+  {% block anon %}{% endblock %}
+{% endif %}
+<div id="toast" class="toast"></div>
+<script>window.__P = "{{ P }}";</script>
+<script src="{{ P }}/static/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,33 @@
+services:
+  wxwb:
+    build:
+      context: .
+      args:
+        # 不需要头条号功能就改成 0，镜像小 1G 多
+        WITH_BROWSER: "1"
+    image: wxwb:latest
+    container_name: wxwb
+    restart: unless-stopped
+    ports:
+      - "8899:8899"
+    environment:
+      WXWB_DATA: /data
+      WXWB_HOST: 0.0.0.0
+      WXWB_PORT: "8899"
+      # 反代把 https://your-domain.com/wxwb/* 转给本服务时填 /wxwb；直接暴露在根路径就留空
+      WXWB_PREFIX: ${WXWB_PREFIX:-}
+      # 用 AI 人物参考图时要填：生图服务得能下载到你的参考图
+      WXWB_PUBLIC_URL: ${WXWB_PUBLIC_URL:-}
+      # 首次启动创建的管理员；不填会随机生成并打印在容器日志里
+      WXWB_ADMIN_USER: ${WXWB_ADMIN_USER:-admin}
+      WXWB_ADMIN_PASSWORD: ${WXWB_ADMIN_PASSWORD:-}
+      TZ: Asia/Shanghai
+    volumes:
+      # 数据库、上传的图、封面、日志、加密密钥全在这里，备份就备份这一个目录
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8899/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

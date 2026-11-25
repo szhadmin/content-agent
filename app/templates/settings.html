@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}设置 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+
+<h1>设置</h1>
+<p class="sub">模型、排版主题、写作规范。写作规范是整段可编辑的提示词，改完下一次生成就生效。</p>
+
+<div class="card">
+  <h2>模型（OpenAI 兼容）</h2>
+  <p class="note" style="margin-bottom:14px">
+    默认填 DeepSeek。想完全不花钱，可以把 base_url 指向你自己跑的 Ollama / vLLM / LM Studio
+    （例如 <code>http://127.0.0.1:11434/v1</code>，模型名填 <code>qwen2.5:14b</code>），Key 随便填一个非空的。
+  </p>
+  <div class="grid2">
+    <div>
+      <label class="f"><span>Base URL</span><input type="text" id="l-base" value="{{ llm.base_url }}" /></label>
+      <label class="f"><span>模型名</span><input type="text" id="l-model" value="{{ llm.model }}" /></label>
+    </div>
+    <div>
+      <label class="f"><span>API Key</span>
+        <input type="password" id="l-key" placeholder="{{ '已配置，留空则不修改' if llm.api_key else '还没配置' }}" />
+      </label>
+      <label class="f"><span>温度（0.6 稳 / 0.9 活）</span>
+        <input type="number" id="l-temp" step="0.1" min="0" max="2" value="{{ llm.temperature }}" />
+      </label>
+    </div>
+  </div>
+  <div class="btnrow">
+    <button class="primary" id="btn-save-llm" type="button">保存</button>
+    <button id="btn-test-llm" type="button">测试连通</button>
+    <span class="note" id="llm-hint"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>排版</h2>
+  <div class="grid3">
+    <label class="f"><span>主题</span>
+      <select id="s-theme">
+        {% for k, v in themes.items() %}
+        <option value="{{ k }}" {{ 'selected' if k == theme }}>{{ v.label }} —— {{ v.desc }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="f"><span>字号</span>
+      <select id="s-font">
+        <option value="small" {{ 'selected' if font_size=='small' }}>小</option>
+        <option value="medium" {{ 'selected' if font_size=='medium' }}>中（默认）</option>
+        <option value="large" {{ 'selected' if font_size=='large' }}>大</option>
+      </select>
+    </label>
+    <label class="f"><span>封面标题最多几个字</span>
+      <input type="number" id="s-covchars" min="4" max="20" value="{{ cover_max_chars }}" />
+    </label>
+    <label class="f"><span>每篇正文配几张图（账号没单独设置时用这个）</span>
+      <input type="number" id="s-imgcount" min="0" max="8" value="{{ images_per_article }}" />
+    </label>
+    <label class="f"><span>允许几张"数据截图"（榜单/报表，为 0 表示只要实拍图）</span>
+      <input type="number" id="s-maxdata" min="0" max="8" value="{{ max_data_images }}" />
+    </label>
+  </div>
+  <div class="btnrow" style="margin-top:6px">
+    <button class="primary" id="btn-save-style" type="button">保存排版设置</button>
+    <span class="note">字体：
+      {% if font.ok %}<code>{{ font.path }}</code>
+      {% else %}<b style="color:var(--err)">没找到中文字体</b>，执行 apt install -y fonts-noto-cjk{% endif %}
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>AI 生图（配图 / 封面）</h2>
+  <p class="note" style="margin-bottom:14px">
+    文本模型和生图模型是两套，这里单独配。支持三类：
+    <b>OpenAI 兼容 images</b>（智谱 CogView / OpenAI / SiliconFlow，填到 <code>/v4</code> 或 <code>/v1</code> 为止）、
+    <b>通义万相</b>（阿里云百炼）、<b>本地 SD</b>（Stable Diffusion WebUI）。
+    不会填就用智谱：Base URL <code>https://open.bigmodel.cn/api/paas/v4</code>，模型 <code>cogview-3-flash</code>（有免费额度）。
+  </p>
+  <div class="grid3">
+    <label class="f"><span>接口类型</span>
+      <select id="g-provider">
+        <option value="images" {{ 'selected' if image_llm.provider=='images' }}>OpenAI 兼容 images/generations</option>
+        <option value="dashscope" {{ 'selected' if image_llm.provider=='dashscope' }}>通义万相（阿里云百炼）</option>
+        <option value="sd" {{ 'selected' if image_llm.provider=='sd' }}>本地 Stable Diffusion</option>
+      </select>
+    </label>
+    <label class="f"><span>Base URL</span><input type="text" id="g-base" value="{{ image_llm.base_url }}" /></label>
+    <label class="f"><span>模型名</span><input type="text" id="g-model" value="{{ image_llm.model }}" /></label>
+  </div>
+  <div class="grid3">
+    <label class="f"><span>参考图模型（人物一致性用，可留空）</span>
+      <input type="text" id="g-refmodel" value="{{ image_llm.ref_model or '' }}"
+             placeholder="通义万相填 wanx2.1-imageedit" /></label>
+    <label class="f"><span>本站对外访问地址（参考图要给生图服务下载）</span>
+      <input type="text" id="g-publicbase" value="{{ public_base or '' }}"
+             placeholder="https://your-domain.com/wxwb" /></label>
+    <div class="note" style="align-self:end;padding-bottom:10px">
+      当前参考图能力：<b>{{ '✅ 支持' if ref_ready and ref_ready[0] else '❌ 不支持' }}</b>
+      {% if ref_ready and not ref_ready[0] %}<br />{{ ref_ready[1] }}{% endif %}
+    </div>
+  </div>
+  <div class="grid2">
+    <label class="f"><span>API Key（本地 SD 可留空）</span>
+      <input type="password" id="g-key" placeholder="{{ '已配置，留空则不修改' if image_llm.api_key else '还没配置' }}" />
+    </label>
+    <div class="note" style="align-self:end;padding-bottom:12px">
+      不绑虚拟人物时走「无脸/氛围感」路线（规避真人脸审核，也更适合当文章配图）；
+      绑了人物就按人物出图，做虚拟人物号用。
+    </div>
+  </div>
+  <div class="btnrow">
+    <button class="primary" id="btn-save-image" type="button">保存生图配置</button>
+    <button id="btn-test-image" type="button">测试生一张</button>
+    <span class="note" id="image-hint"></span>
+  </div>
+  <div id="image-test-out" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>写作规范（提示词）</h2>
+  <p class="note" style="margin-bottom:10px">
+    这一段会作为 system prompt 直接喂给模型。里面的 <code>{author}</code> 会被替换成账号的作者署名。
+  </p>
+  <textarea id="s-prompt" rows="26" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">{{ style_prompt }}</textarea>
+  <div class="btnrow" style="margin-top:10px">
+    <button class="primary" id="btn-save-prompt" type="button">保存写作规范</button>
+    <span class="note">改坏了不影响已有稿件，只影响之后生成的。</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>改登录密码</h2>
+  <div class="inline" style="gap:10px;flex-wrap:wrap">
+    <label class="f" style="max-width:200px"><span>原密码</span><input type="password" id="p-old" /></label>
+    <label class="f" style="max-width:200px"><span>新密码（≥6 位）</span><input type="password" id="p-new" /></label>
+    <button id="btn-pwd" type="button">修改</button>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+$('#btn-save-llm').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '保存中…');
+  try {
+    await api('/api/settings', {
+      llm: {
+        base_url: $('#l-base').value.trim(),
+        model: $('#l-model').value.trim(),
+        api_key: $('#l-key').value.trim(),
+        temperature: $('#l-temp').value,
+      },
+    });
+    toast('已保存', 'ok');
+    if ($('#l-key').value) $('#l-key').value = '';
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-test-llm').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '测试中…');
+  try {
+    const r = await api('/api/settings/test_llm', {});
+    const res = r.result || {};
+    $('#llm-hint').textContent = res.ok ? `可用（${res.model}）` : (res.error || '失败');
+    toast(res.ok ? '模型可用' : '模型不可用', res.ok ? 'ok' : 'err');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-save-style').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '保存中…');
+  try {
+    await api('/api/settings', {
+      theme: $('#s-theme').value,
+      font_size: $('#s-font').value,
+      cover_max_chars: parseInt($('#s-covchars').value, 10) || 10,
+      images_per_article: parseInt($('#s-imgcount').value, 10) || 0,
+      max_data_images: parseInt($('#s-maxdata').value, 10) || 0,
+    });
+    toast('已保存', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-save-image').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '保存中…');
+  try {
+    await api('/api/settings', {
+      image_llm: {
+        provider: $('#g-provider').value,
+        base_url: $('#g-base').value.trim(),
+        model: $('#g-model').value.trim(),
+        ref_model: $('#g-refmodel').value.trim(),
+        api_key: $('#g-key').value.trim(),
+      },
+      public_base: $('#g-publicbase').value.trim(),
+    });
+    toast('生图配置已保存', 'ok');
+    $('#g-key').value = '';
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-test-image').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  $('#image-hint').textContent = '正在生成测试图…';
+  busy(btn, true, '生图中…');
+  try {
+    const r = await api('/api/settings/test_image', {});
+    const res = r.result || {};
+    if (res.ok) {
+      $('#image-hint').textContent = '生图成功';
+      $('#image-test-out').innerHTML = '<img src="' + P + res.url + '" alt="测试图" style="max-width:320px;width:100%;border-radius:12px;border:1px solid var(--line)" />';
+      toast('生图成功', 'ok');
+    } else {
+      $('#image-hint').textContent = res.error || '生图失败';
+      toast(res.error || '生图失败', 'err');
+    }
+  } catch (err) { $('#image-hint').textContent = err.message; toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-save-prompt').addEventListener('click', async (e) => {  const btn = e.currentTarget;
+  busy(btn, true, '保存中…');
+  try {
+    await api('/api/settings', { style_prompt: $('#s-prompt').value });
+    toast('已保存', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+$('#btn-pwd').addEventListener('click', async () => {
+  try {
+    await api('/api/password', { old: $('#p-old').value, new: $('#p-new').value });
+    toast('密码已修改', 'ok');
+    $('#p-old').value = ''; $('#p-new').value = '';
+  } catch (err) { toast(err.message, 'err'); }
+});
+</script>
+{% endblock %}

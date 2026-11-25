@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}人物 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+  <div>
+    <h1>虚拟人物</h1>
+    <p class="sub">做「虚拟人物号」用：传一张人物参考照，之后这个人在工作、下班、吃饭各场景都保持同一张脸。</p>
+  </div>
+  <button class="btn" id="btn-new">+ 新建人物</button>
+</div>
+
+{% if not ref_ok %}
+<div class="card warn-card">
+  <b>⚠ 当前生图服务不支持参考图</b>
+  <p class="hint">{{ ref_hint }}</p>
+  <p class="hint">没切之前，人物只能靠「外形描述」拼提示词，长相不会真的固定下来。
+     推荐用<b>阿里云百炼 · 通义万相图像编辑</b>（有免费额度）：到「设置 → AI 生图」把服务切成
+     <code>dashscope</code>，Base URL 填 <code>https://dashscope.aliyuncs.com/api/v1</code>，
+     参考图模型填 <code>wanx2.1-imageedit</code>。</p>
+</div>
+{% endif %}
+
+<div class="grid2" style="align-items:start">
+  <div>
+    <div id="char-list">
+      {% for c in chars %}
+      <div class="card char-card" data-id="{{ c.id }}">
+        <div class="char-head">
+          <div>
+            <div class="char-name">{{ c.name }}</div>
+            <div class="hint">
+              {% if c.ref_images %}参考图 {{ c.ref_images|length }} 张{% else %}还没传参考图{% endif %}
+              {% if used.get(c.id) %} · 正被「{{ used[c.id]|join('、') }}」使用{% endif %}
+            </div>
+          </div>
+          <div class="char-acts">
+            <button class="btn ghost sm js-edit">编辑</button>
+            <button class="btn ghost sm js-del">删除</button>
+          </div>
+        </div>
+
+        {% if c.ref_images %}
+        <div class="refgrid">
+          {% for u in c.ref_images %}
+          <div class="refitem">
+            <img src="{{ media(u) }}" alt="参考图" />
+            <button class="refdel js-rmref" data-index="{{ loop.index0 }}" title="移除">×</button>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if c.appearance %}<p class="char-line"><span>外形</span>{{ c.appearance }}</p>{% endif %}
+        {% if c.scene_hint %}<p class="char-line"><span>画面</span>{{ c.scene_hint }}</p>{% endif %}
+
+        <div class="char-test">
+          <input type="text" class="js-scene" placeholder="试一个场景，比如：在办公室加班到深夜" />
+          <button class="btn ghost sm js-test">试生成</button>
+        </div>
+        <div class="js-testout"></div>
+      </div>
+      {% endfor %}
+      {% if not chars %}
+      <div class="card empty">
+        <p>还没有人物。新建一个，传 1~3 张参考照（正面、清晰、光线均匀最好）。</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="rightcol">
+    <div class="card">
+      <h3 id="form-title">新建人物</h3>
+      <input type="hidden" id="f-id" value="0" />
+
+      <label class="f"><span>名字</span>
+        <input type="text" id="f-name" placeholder="比如：小依（26届深漂女生）" />
+      </label>
+
+      <label class="f"><span>外形描述（生图后端不支持参考图时，全靠它保住长相）</span>
+        <textarea id="f-appearance" rows="4"
+          placeholder="26岁女生，及肩黑短发，单眼皮，皮肤偏白，身形偏瘦，日常素颜或淡妆，常穿宽松衬衫"></textarea>
+      </label>
+
+      <label class="f"><span>画面偏好（选填）</span>
+        <input type="text" id="f-scene" placeholder="日系胶片感、自然光、浅景深、暖色调" />
+      </label>
+
+      <label class="f"><span>参考图（最多 3 张，先保存人物再传）</span></label>
+      <div class="refupload">
+        <input type="file" id="f-ref" accept="image/*" hidden />
+        <button class="btn ghost sm" id="btn-ref">选择参考图…</button>
+        <span class="hint" id="ref-tip">先保存人物，再传参考图</span>
+      </div>
+
+      <div class="formacts">
+        <button class="btn" id="btn-save">保存</button>
+        <button class="btn ghost" id="btn-cancel">取消</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>怎么用</h3>
+      <ol class="howto">
+        <li>建人物、传参考照（可选，但强烈建议）</li>
+        <li>到「账号」页把这个人物绑到某个号上</li>
+        <li>之后那个号的 AI 配图/封面都会自动带上这个人物</li>
+      </ol>
+      <p class="hint">一个号绑一个人物。想同一个人跑多个号，就分别绑同一个。</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>window.__CHARS = {{ chars|tojson }};</script>
+<script>
+const PFX = window.__P || '';
+const CHARS = {};
+(window.__CHARS || []).forEach(c => { CHARS[c.id] = c; });
+const listEl = $('#char-list');
+
+function formReset() {
+  $('#f-id').value = '0';
+  $('#f-name').value = '';
+  $('#f-appearance').value = '';
+  $('#f-scene').value = '';
+  $('#form-title').textContent = '新建人物';
+  $('#ref-tip').textContent = '先保存人物，再传参考图';
+}
+
+$('#btn-new').onclick = () => { formReset(); $('#f-name').focus(); };
+$('#btn-cancel').onclick = formReset;
+
+$('#btn-save').onclick = async () => {
+  const body = {
+    id: Number($('#f-id').value || 0),
+    name: $('#f-name').value.trim(),
+    appearance: $('#f-appearance').value.trim(),
+    scene_hint: $('#f-scene').value.trim(),
+  };
+  if (!body.name) return toast('先给人物起个名字', 'err');
+  const btn = $('#btn-save');
+  busy(btn, true, '保存中…');
+  try {
+    const r = await api('/api/characters', body);
+    // 新建后不刷新页面，直接把 id 填上，方便马上传参考图
+    if (body.id === 0 && r.result && r.result.id) {
+      $('#f-id').value = String(r.result.id);
+      $('#form-title').textContent = '已新建：' + body.name;
+      $('#ref-tip').textContent = '现在可以传参考图了';
+      toast('已保存，接着传参考图');
+    } else {
+      toast('已保存');
+      setTimeout(() => location.reload(), 600);
+    }
+  } catch (e) {
+    toast(e.message || '保存失败', 'err');
+  } finally {
+    busy(btn, false);
+  }
+};
+
+$('#btn-ref').onclick = () => {
+  if (!Number($('#f-id').value || 0)) return toast('先把人物保存一下，再传参考图', 'err');
+  $('#f-ref').click();
+};
+
+$('#f-ref').onchange = async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const id = Number($('#f-id').value || 0);
+  const fd = new FormData();
+  fd.append('file', file);
+  $('#ref-tip').textContent = '上传中…';
+  try {
+    const res = await fetch(`${PFX}/api/characters/${id}/ref`, {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    const r = await res.json();
+    if (!r.ok) throw new Error(r.error || '上传失败');
+    toast('参考图已添加');
+    setTimeout(() => location.reload(), 500);
+  } catch (e) {
+    toast(e.message || '上传失败', 'err');
+    $('#ref-tip').textContent = '建议正面半身照，五官清楚';
+  } finally {
+    ev.target.value = '';
+  }
+};
+
+listEl.onclick = async (ev) => {
+  const card = ev.target.closest('.char-card');
+  if (!card) return;
+  const id = Number(card.dataset.id);
+  const c = CHARS[id] || {};
+
+  if (ev.target.classList.contains('js-edit')) {
+    $('#f-id').value = String(id);
+    $('#f-name').value = c.name || '';
+    $('#f-appearance').value = c.appearance || '';
+    $('#f-scene').value = c.scene_hint || '';
+    $('#form-title').textContent = '编辑：' + (c.name || '');
+    $('#ref-tip').textContent = '可以继续加参考图（最多 3 张）';
+    $('#f-name').focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+
+  if (ev.target.classList.contains('js-del')) {
+    if (!confirm('删除这个人物？已绑定它的账号会解除绑定。')) return;
+    try {
+      await api(`/api/characters/${id}/delete`, {});
+      toast('已删除');
+      location.reload();
+    } catch (e) { toast(e.message || '删除失败', 'err'); }
+    return;
+  }
+
+  if (ev.target.classList.contains('js-rmref')) {
+    const index = Number(ev.target.dataset.index || 0);
+    try {
+      await api(`/api/characters/${id}/ref/remove`, { index });
+      location.reload();
+    } catch (e) { toast(e.message || '移除失败', 'err'); }
+    return;
+  }
+
+  if (ev.target.classList.contains('js-test')) {
+    const inp = card.querySelector('.js-scene');
+    const out = card.querySelector('.js-testout');
+    const scene = (inp.value || '').trim() || '在办公室里对着电脑工作';
+    const btn = ev.target;
+    busy(btn, true, '生成中…');
+    const t0 = Date.now();
+    let tick = null;
+    const drawWait = (msg) => {
+      const sec = Math.round((Date.now() - t0) / 1000);
+      out.innerHTML = `<p class="hint">${msg}已等 ${sec} 秒（一般 40~70 秒）…</p>`;
+    };
+    drawWait('正在按人物参考生成，');
+    tick = setInterval(() => drawWait('正在按人物参考生成，'), 1000);
+    try {
+      const r = await api(`/api/characters/${id}/test`, { scene });
+      // ok() 是平铺返回：{ok:true, url, scene, warning}
+      const rt = r.result || r;
+      const took = ((Date.now() - t0) / 1000).toFixed(0);
+      if (!rt || !rt.url) throw new Error('接口没返回图片地址');
+      // 接口返回的是 /media/uploads/xxx.png（不带子路径前缀）。
+      // 页面挂在 /wxwb 下，直接当根路径用会 404，所以必须过 withPrefix()。
+      const meta = rt.shot
+        ? `<p class="hint">本次机位：${esc(rt.shot)}${rt.action ? '｜动作：' + esc(rt.action) : ''}`
+          + `${rt.expression ? '｜表情：' + esc(rt.expression) : ''}</p>`
+        : '';
+      out.innerHTML = `<img class="testimg" src="${withPrefix(rt.url)}" alt="试生成" />`
+        + `<p class="hint">用时 ${took} 秒${rt.used_reference ? '' : '（未用参考图）'}</p>`
+        + meta
+        + (rt.warning ? `<p class="hint warn">${esc(rt.warning)}</p>` : '')
+        + `<p class="hint">再点一次「试生成」会换一个机位和动作。</p>`;
+    } catch (e) {
+      out.innerHTML = `<p class="hint err">${esc(e.message || '生成失败')}</p>`;
+    } finally {
+      clearInterval(tick);
+      busy(btn, false);
+    }
+  }
+};
+</script>
+{% endblock %}

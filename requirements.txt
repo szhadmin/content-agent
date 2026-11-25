@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn>=0.27
+jinja2>=3.1
+python-multipart>=0.0.9
+markdown-it-py>=3.0,<5
+Pillow>=10
+requests>=2.31
+cryptography>=41
+# 头条号草稿走浏览器自动化（app/toutiao.py）。
+# ⚠️ 版本要和 Dockerfile 里 PLAYWRIGHT_VERSION / 基础镜像保持一致，升的时候两边一起改。
+# 不用头条功能可以不装浏览器：python -m playwright install chromium
+playwright==1.65.2

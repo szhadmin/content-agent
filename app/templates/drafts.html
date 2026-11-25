@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}草稿箱 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+  <div>
+    <h1 style="margin-bottom:2px">草稿箱</h1>
+    <p class="sub" style="margin-bottom:0">公众号后台草稿箱的镜像，用来核对有没有重复建稿。发布请回编辑器或公众号后台。</p>
+  </div>
+  <div class="btnrow">
+    <select id="acc-switch" style="max-width:180px">
+      {% for a in accounts %}
+      <option value="{{ a.id }}" {{ 'selected' if a.id == current_account }}>{{ a.name }}</option>
+      {% endfor %}
+    </select>
+    <button id="btn-refresh" type="button">刷新</button>
+  </div>
+</div>
+
+{% if not accounts %}
+<div class="alert info">还没有配置公众号账号，去 <a href="{{ P }}/accounts">公众号账号</a> 添加。</div>
+{% else %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px;flex-wrap:wrap">
+    <span class="note" id="meta">加载中…</span>
+    <input type="text" id="draft-search" placeholder="搜标题…" style="width:200px;padding:6px 9px" />
+  </div>
+  <div id="list"></div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let DRAFTS = [];
+
+function fmtTime(t) {
+  if (!t) return '—';
+  // 微信返回的是秒级时间戳
+  if (/^\d{9,11}$/.test(String(t))) {
+    const d = new Date(parseInt(t, 10) * 1000);
+    return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  return String(t);
+}
+
+function render() {
+  const kw = ($('#draft-search').value || '').trim().toLowerCase();
+  const rows = DRAFTS.filter(d => !kw || (d.title || '').toLowerCase().includes(kw));
+  if (!rows.length) {
+    $('#list').innerHTML = '<div class="empty">' + (DRAFTS.length ? '没有匹配的草稿' : '草稿箱是空的') + '</div>';
+    return;
+  }
+  $('#list').innerHTML = `<table class="t">
+    <thead><tr><th>标题</th><th style="width:90px">作者</th><th style="width:90px">更新时间</th>
+    <th style="width:130px">media_id</th></tr></thead>
+    <tbody>${rows.map(d => `<tr>
+      <td>${esc(d.title || '（无标题）')}
+        ${d.digest ? `<div class="note">${esc((d.digest || '').slice(0, 70))}</div>` : ''}</td>
+      <td class="note">${esc(d.author || '—')}</td>
+      <td class="note">${fmtTime(d.update_time)}</td>
+      <td class="note mono" style="font-size:11.5px">${esc((d.media_id || '').slice(0, 14))}…</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function load(refresh) {
+  const btn = $('#btn-refresh');
+  busy(btn, true, '读取中…');
+  $('#meta').textContent = '正在读公众号草稿箱…';
+  try {
+    const acc = $('#acc-switch').value;
+    const r = await api(`/api/drafts?account_id=${acc}&refresh=${refresh ? 1 : 0}`, undefined, 'GET');
+    DRAFTS = r.drafts || [];
+    $('#meta').textContent = `共 ${r.total || 0} 篇`
+      + (r.cached ? ` · 缓存 ${r.age}s 前（点刷新拉最新）` : ' · 刚拉取');
+    render();
+  } catch (err) {
+    $('#meta').textContent = '';
+    $('#list').innerHTML = `<div class="alert err">读取失败：${esc(err.message)}</div>`;
+  } finally { busy(btn, false); }
+}
+
+if ($('#btn-refresh')) {
+  $('#btn-refresh').addEventListener('click', () => load(true));
+  $('#acc-switch').addEventListener('change', () => load(true));
+  $('#draft-search').addEventListener('input', render);
+  load(false);
+}
+</script>
+{% endblock %}

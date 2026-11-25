@@ -1,0 +1,54 @@
+# ---- 精简镜像（不含浏览器，只支持公众号）----
+#
+# 头条号草稿要靠浏览器自动化，这个镜像里没有 Chromium，
+# 点了头条相关功能会报"没装 playwright 浏览器"。
+# 只要公众号、想把镜像从 2G 压到 400M 左右，用这个：
+#
+#   docker build -f Dockerfile.slim -t wxwb:slim .
+FROM python:3.12-slim
+
+ARG APT_MIRROR=
+ARG PIP_INDEX_URL=
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Asia/Shanghai
+
+WORKDIR /app
+
+# 中文字体：封面要把中文标题压到图上，缺字体会变成一排方块
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl tzdata fontconfig \
+        fonts-noto-cjk fonts-wqy-zenhei; \
+    rm -rf /var/lib/apt/lists/*
+
+# playwright 这个包留着（代码里是可选 import），但不装浏览器内核
+COPY requirements.txt /app/requirements.txt
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+        pip install --no-cache-dir -i "$PIP_INDEX_URL" -r /app/requirements.txt; \
+    else \
+        pip install --no-cache-dir -r /app/requirements.txt; \
+    fi
+
+COPY run.py /app/run.py
+COPY app /app/app
+COPY tools /app/tools
+
+ENV WXWB_DATA=/data \
+    WXWB_HOST=0.0.0.0 \
+    WXWB_PORT=8899
+
+RUN mkdir -p /data
+VOLUME ["/data"]
+EXPOSE 8899
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${WXWB_PORT}/healthz" || exit 1
+
+CMD ["python", "run.py"]

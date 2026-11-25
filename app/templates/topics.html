@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% block title %}热搜选题 · {{ APP_NAME }}{% endblock %}
+{% block main %}
+
+<h1>热搜选题</h1>
+<p class="sub">抓微博热搜并按分类推荐。选哪个号，就按那个号的领域标「适不适合」，点一行就能开写。</p>
+
+<div class="card">
+  <div class="inline" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+    <label class="f" style="max-width:220px"><span>给哪个号写</span>
+      <select id="acc">
+        {% for a in accounts %}
+        <option value="{{ a.id }}" {{ 'selected' if a.is_default }}
+          data-domain="{{ a.topic_domain or '' }}"
+          data-platform="{{ a.platform or 'wechat' }}">{{ PLATFORM_LABELS.get(a.platform or 'wechat') }}·{{ a.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="f" style="max-width:110px"><span>档位</span>
+      <select id="slot">
+        {% for k, v in SLOT_LABELS.items() %}
+        <option value="{{ k }}" {{ 'selected' if k=='morning' }}>{{ v }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="primary" id="btn-refresh" type="button" style="margin-bottom:2px">刷新热搜</button>
+    <button id="btn-pick" type="button" style="margin-bottom:2px">让模型挑一条</button>
+    <span class="note" style="margin-bottom:9px" id="hint">点「刷新热搜」开始</span>
+  </div>
+
+  <div id="pick-result"></div>
+
+  <div id="tabs" class="btnrow" style="gap:6px;margin-bottom:12px;flex-wrap:wrap"></div>
+
+  <div id="list" style="max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px">
+    <div class="empty" style="padding:34px">还没抓取热搜</div>
+  </div>
+  <p class="note" style="margin:10px 0 0">
+    分类由「关键词规则 + 模型语义判断」两段完成，<b>带 ★ 的那个是这个号领域对应的分类</b>。
+    灰标=已按硬性规则排除（涉政/八卦/体育赛果等），仍可点开写。
+  </p>
+</div>
+
+<div class="card">
+  <h2>手动加一条选题</h2>
+  <div class="inline" style="gap:10px;flex-wrap:wrap">
+    <label class="f" style="flex:1;min-width:260px"><span>选题</span>
+      <input type="text" id="m-title" placeholder="一句话说清这件事" /></label>
+    <button id="btn-add-topic" type="button" style="margin-bottom:1px">添加</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>历史选题</h2>
+  {% if recent %}
+  <table class="t">
+    <thead><tr><th style="width:88px">日期</th><th style="width:60px">档位</th><th>选题</th><th style="width:110px">热度/名次</th><th style="width:74px">来源</th></tr></thead>
+    <tbody>
+      {% for t in recent %}
+      <tr>
+        <td class="note">{{ t.day }}</td>
+        <td><span class="badge">{{ SLOT_LABELS.get(t.slot, t.slot) }}</span></td>
+        <td>
+          {% if t.article_id %}<a href="{{ P }}/article/{{ t.article_id }}">{{ t.title }}</a>{% else %}{{ t.title }}{% endif %}
+          {% if t.note %}<div class="note">{{ t.note[:80] }}</div>{% endif %}
+        </td>
+        <td class="note">{{ ('{:,.0f}'.format(t.weibo_heat)) if t.weibo_heat else '—' }}{% if t.weibo_rank %} · #{{ t.weibo_rank }}{% endif %}</td>
+        <td><span class="badge">{{ t.source }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">还没有记录</div>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let items = [];
+let counts = {};
+let activeCat = '全部';
+let starCat = '';
+
+function accId() { return parseInt($('#acc').value, 10) || null; }
+function heatText(n) { return n ? n.toLocaleString() : '—'; }
+
+let CATS = ['文娱', '社会', '科技', '财经', '教育', '健康', '生活', '体育', 'ACG', '其他'];
+
+function renderTabs() {
+  const total = items.length;
+  const list = ['全部'].concat(CATS.filter(c => (counts[c] || 0) > 0));
+  $('#tabs').innerHTML = list.map(c => {
+    const n = c === '全部' ? total : (counts[c] || 0);
+    const on = c === activeCat;
+    const star = (c === starCat && c !== '全部') ? ' ★' : '';
+    return `<button data-cat="${esc(c)}" type="button"
+      style="${on ? 'background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600;' : ''}">
+      ${esc(c)}${star}<span style="opacity:.75;margin-left:5px">${n}</span></button>`;
+  }).join('');
+  $$('[data-cat]').forEach(b => b.addEventListener('click', () => {
+    activeCat = b.dataset.cat;
+    renderTabs(); render();
+  }));
+}
+
+function render() {
+  const box = $('#list');
+  const shown = items.filter(it => activeCat === '全部' || (it.category || '其他') === activeCat);
+  if (!shown.length) {
+    box.innerHTML = '<div class="empty" style="padding:34px">这个分类下没有条目</div>';
+    return;
+  }
+  box.innerHTML = shown.map((it) => {
+    const idx = items.indexOf(it);
+    const fit = it.domain_hit;
+    const fitBadge = (it.fit_terms && it.fit_terms.length)
+      ? `<span class="badge green">领域命中 ${esc(it.fit_terms.join('/'))}</span>`
+      : (fit ? '' : `<span class="badge">未命中领域</span>`);
+    const blocked = (it.hard_block && it.hard_block.length)
+      ? `<span class="badge warn">排除：${esc(it.hard_block.join('/'))}</span>` : '';
+    return `<div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f1f2f4;${it.usable ? '' : 'opacity:.5'}">
+      <b style="color:var(--ink3);font-size:12px;min-width:22px">${it.rank}</b>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13.5px">${esc(it.word)}</div>
+        <div style="margin-top:3px;display:flex;gap:6px;flex-wrap:wrap">
+          <span class="badge">${heatText(it.num)}</span>
+          <span class="badge blue">${esc(it.category || '其他')}</span>
+          ${fitBadge}${blocked}
+        </div>
+      </div>
+      <button data-write="${idx}" type="button" style="flex:0 0 auto">写这篇</button>
+    </div>`;
+  }).join('');
+
+  $$('[data-write]', box).forEach(b => b.addEventListener('click', () => {
+    write(items[parseInt(b.dataset.write, 10)]);
+  }));
+}
+
+async function classifyInBackground() {
+  // 只把"其他"和规则没认出来的交给模型，避免整批重算
+  const words = items.filter(x => (x.category || '其他') === '其他').map(x => x.word);
+  if (!words.length) return;
+  $('#hint').textContent += ' · 正在补分类…';
+  try {
+    const r = await api('/api/topics/classify', { words });
+    const map = r.mapping || {};
+    let changed = 0;
+    items.forEach(it => {
+      if (map[it.word] && map[it.word] !== it.category) { it.category = map[it.word]; changed++; }
+    });
+    if (changed) {
+      counts = {};
+      items.forEach(x => { const c = x.category || '其他'; counts[c] = (counts[c] || 0) + 1; });
+      renderTabs(); render();
+    }
+    $('#hint').textContent = $('#hint').textContent.replace(' · 正在补分类…', '');
+  } catch (e) {
+    $('#hint').textContent = $('#hint').textContent.replace(' · 正在补分类…', '');
+  }
+}
+
+async function refresh() {
+  const btn = $('#btn-refresh');
+  busy(btn, true, '抓取中…');
+  $('#hint').textContent = '正在抓微博热搜并分类…';
+  try {
+    const r = await api('/api/topics/fetch', { limit: 40, account_id: accId() });
+    items = r.items || [];
+    counts = r.counts || {};
+    if (Array.isArray(r.categories) && r.categories.length) CATS = r.categories;
+    starCat = r.default_category || '';
+    if (activeCat !== '全部' && !(counts[activeCat] > 0)) activeCat = '全部';
+    renderTabs(); render();
+    // 先把规则分类的结果秒渲染出来，再后台让模型补分类
+    classifyInBackground();
+
+    const usable = items.filter(x => x.usable).length;
+    const hits = items.filter(x => (x.fit_terms || []).length).length;
+    const dom = ($('#acc').selectedOptions[0] || {}).dataset?.domain || '';
+    $('#hint').textContent = `抓到 ${items.length} 条，可用 ${usable} 条`
+      + (dom ? `，命中本号领域 ${hits} 条` : '');
+    if (dom && hits === 0 && starCat && counts[starCat]) {
+      $('#pick-result').innerHTML = `<div class="alert info" style="font-size:12.5px">
+        没有直接命中本号领域（${esc(dom)}）的条目，但「${esc(starCat)}」分类下有 ${counts[starCat]} 条可能有角度。
+        也可以：① 换号再看；② 点某条「写这篇」让模型从本号角度切；③ 下面自己加题。</div>`;
+    } else if (!dom) {
+      $('#pick-result').innerHTML = '';
+    }
+  } catch (err) {
+    $('#hint').textContent = err.message;
+    toast(err.message, 'err');
+  } finally { busy(btn, false); }
+}
+
+$('#btn-pick').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  busy(btn, true, '模型挑选中…');
+  try {
+    const r = await api('/api/topics/pick', { limit: 30, account_id: accId() });
+    items = r.candidates || [];
+    if (Array.isArray(r.categories) && r.categories.length) CATS = r.categories;
+    counts = {};
+    items.forEach(x => { const c = x.category || '其他'; counts[c] = (counts[c] || 0) + 1; });
+    activeCat = '全部';
+    renderTabs(); render();
+    const s = r.selection || {};
+    if (r.item) {
+      $('#pick-result').innerHTML = `<div class="alert ok" style="font-size:13px">
+        <b>模型推荐：${esc(r.item.word)}</b>
+        <span class="badge blue">${esc(r.item.category || '')}</span>
+        （热度 ${heatText(r.item.num)} / 第 ${r.item.rank} 名）<br>
+        <span class="note">为什么：${esc(s.reason || '')}</span><br>
+        <span class="note">轴心：${esc(s.axis || '')}</span>
+        ${s.fit ? `<br><span class="note">领域贴合：${esc(s.fit)}</span>` : ''}
+        <div style="margin-top:8px"><button class="primary" id="btn-use-pick" type="button">就用这条开写</button></div>
+      </div>`;
+      $('#btn-use-pick').addEventListener('click', () => write(r.item));
+      toast('已推荐：' + r.item.word, 'ok');
+    } else {
+      $('#pick-result').innerHTML = `<div class="alert warn" style="font-size:13px">
+        模型认为这批热搜里没有适合本号的选题：${esc(s.reason || '')}<br>
+        <span class="note">可以自己从下面挑一条，或换个号再试。</span></div>`;
+    }
+  } catch (err) { toast(err.message, 'err'); }
+  finally { busy(btn, false); }
+});
+
+async function write(it) {
+  if (!it) return;
+  toast('已开始生成，正在打开稿子…');
+  $('#list').style.pointerEvents = 'none';
+  try {
+    const r = await api('/api/generate', {
+      topic: it.word,
+      slot: $('#slot').value,
+      account_id: accId(),
+      rank: it.rank,
+      heat: it.num,
+      source: it.source || 'weibo',
+      async_mode: true,          // 立刻返回，去稿子页看实时进度
+    });
+    location.href = P + '/article/' + r.article_id + '?generating=1';
+  } catch (err) {
+    $('#list').style.pointerEvents = '';
+    toast(err.message, 'err');
+  }
+}
+
+$('#btn-refresh').addEventListener('click', refresh);
+$('#acc').addEventListener('change', () => { if (items.length) refresh(); });
+
+$('#btn-add-topic').addEventListener('click', async () => {
+  const title = $('#m-title').value.trim();
+  if (!title) { toast('填个选题', 'err'); return; }
+  try {
+    await api('/api/topics/manual', { title, slot: $('#slot').value });
+    toast('已添加', 'ok');
+    location.reload();
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+if ($('#acc')) refresh();
+</script>
+{% endblock %}
