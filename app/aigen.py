@@ -17,6 +17,10 @@
 **关于「穿搭/美女图」**：真人脸/真人穿搭图各家都有内容安全限制，效果也最容易翻车。
 这里默认走「不露脸/氛围感/平铺/街拍剪影」的提示词路线（见 build_prompt），
 既规避审核，也更适合当正文配图。要真人脸得自己在提示词里写，后果自负。
+
+**提示词怎么写得「像照片」**：全部交给 photo.py。那边按焦距/光圈、光的方向和色温、
+可数的质感细节、不完美构图和「动作进行中」来拼提示词，并且自带一组反 AI 味的负向词。
+这个文件只负责「把什么场景交给它」，不再自己堆形容词。
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ from typing import Any
 import requests
 from PIL import Image
 
-from . import characters, db
+from . import characters, db, photo
 from .settings import UPLOAD_DIR, public_base_url
 
 DEFAULT_IMAGE_CFG = {
@@ -99,29 +103,61 @@ def _scene_hint(account: dict | None) -> str:
     return "简洁构图、自然光、真实感、适合当文章配图"
 
 
+def photo_style() -> str:
+    """当前选的写实风格（photo.STYLES 的 key）。设置页「生图风格」存的就是它。"""
+    v = str(db.get_setting("photo_style", "") or "").strip()
+    return v if v in photo.STYLES else "auto"
+
+
+def _next_plan_index() -> int:
+    """出图计数器：每生成一张 +1，用来轮换焦距/光线/构图。
+
+    为什么不用随机：随机的话同一篇稿子重生成两次会拿到完全不同的光，排查问题时无法复现；
+    而且「随机」在小词库里经常连着撞同一个值，看着还是像复制粘贴。自增取模必定轮换。
+    """
+    n = int(db.get_setting("photo_plan_idx", 0) or 0)
+    try:
+        db.set_setting("photo_plan_idx", (n + 1) % 100000)
+    except Exception:  # noqa: BLE001
+        pass
+    return n
+
+
 def build_prompt(topic: str, account: dict | None = None, *, kind: str = "inline",
-                 extra: str = "", character: dict | None = None) -> str:
+                 extra: str = "", character: dict | None = None,
+                 plan_idx: int | None = None, expression: str = "") -> str:
     """把选题翻成生图提示词。
 
     刻意走「无脸/氛围感」路线：一是各家对真人脸审核都严，二是文章配图本来就不需要
     一张具体的脸。穿搭/美妆要的是**画面氛围**，不是某个真人。
+
+    具体的摄影参数（焦距和光圈、光的方向、质感、不完美构图）由 photo.py 给，
+    这里只决定「画面里有什么」。`expression` 用来覆盖 photo 里的通用表情——
+    走机位表的时候，表情是和机位/动作一起挑的，不能被通用表情顶掉。
     """
     scene = (character or {}).get("scene_hint") or _scene_hint(account)
     ratio = "横版 16:9" if kind == "cover" else "横版 3:2"
+    portrait = bool(character)
+    idx = _next_plan_index() if plan_idx is None else int(plan_idx)
+
+    p = photo.plan(idx, portrait=portrait, style=photo_style(),
+                   look=(character or {}).get("appearance") or "",
+                   scene_hint=scene)
+    if expression:
+        p["expression"] = expression
     parts = [
-        f"一张{ratio}的高质量写实照片，主题是「{topic}」。",
-        f"画面风格：{scene}。",
+        f"{ratio}的写实照片。画面内容：{topic}。",
+        photo.prompt_block(p, portrait=portrait),
     ]
     if character:
-        # 绑了虚拟人物：要的是"同一个人的不同场景"，把外形描述拼进去。
-        # 文本模型没有参考图能力时，这是唯一能保住长相的抓手。
-        if character.get("appearance"):
-            parts.append(f"人物设定（每张图都要是同一个人的长相）：{character['appearance']}。")
-        parts.append("人物自然地出现在画面里，不要摆拍感。")
+        # 绑了虚拟人物：要的是"同一个人的不同场景"。
+        # 文本模型没有参考图能力时，外形描述是唯一能保住长相的抓手。
+        parts.append("人物自然地出现在画面里，动作不要摆好等快门。")
     else:
-        parts.append("要求：构图干净、主体明确、不要文字和水印、不要 logo。")
+        parts.append("画面主体明确，一眼能看出拍的是什么。")
     if extra:
-        parts.append(extra)
+        parts.append(f"额外要求：{extra}")
+    parts.append(photo.negative_clause(portrait=portrait))
     return "\n".join(parts)
 
 
@@ -301,7 +337,7 @@ def _sd_reference(cfg: dict[str, Any], base: str, prompt: str,
     b64 = base64.b64encode(p.read_bytes()).decode()
     d = _post(f"{base}/sdapi/v1/img2img", cfg, {
         "prompt": prompt,
-        "negative_prompt": "text, watermark, logo, lowres, deformed, extra fingers",
+        "negative_prompt": ", ".join(photo.negative_terms(portrait=True)),
         "init_images": [b64],
         "denoising_strength": 0.55,
         "steps": 28, "width": 1024, "height": 576, "n_iter": 1,
@@ -315,6 +351,7 @@ def _sd_reference(cfg: dict[str, Any], base: str, prompt: str,
 def generate_scene(character: dict[str, Any], scene: str, *,
                    account: dict | None = None, kind: str = "inline",
                    style: str = "", shot_index: int | None = None,
+                   plan_idx: int | None = None,
                    return_meta: bool = False) -> Any:
     """按人物参考生成「这个人在某个场景」的图，返回 /media/uploads/xxx.png。
 
@@ -334,6 +371,8 @@ def generate_scene(character: dict[str, Any], scene: str, *,
     base = (cfg.get("base_url") or "").rstrip("/")
     refs = list(character.get("ref_images") or [])
     can_ref, _why = reference_ready(cfg)
+    if plan_idx is None:
+        plan_idx = _next_plan_index()
 
     if refs and can_ref:
         if shot_index is not None:
@@ -342,6 +381,12 @@ def generate_scene(character: dict[str, Any], scene: str, *,
             shot, action, expr = _next_shot(character)
         look = character.get("appearance") or ""
         st = style or character.get("scene_hint") or ""
+        # 摄影参数单独轮换：机位表管「从哪拍、人在干嘛」，photo 管「这光怎么来的、什么镜头」
+        p = photo.plan(plan_idx, portrait=True, style=photo_style(),
+                       look=look, scene_hint=st)
+        # 表情用机位表里配好的那条：它和机位/动作是一起挑的，photo 里的通用表情会让
+        # 「背着包往前走」配上「无奈叹气」这种别扭组合。
+        p.pop("expression", None)
         prompt = (
             "以参考图中的人物为原型，**只保持脸部特征一致**"
             "（五官、脸型、眼睛、鼻子、嘴型、发型、发色、肤色），"
@@ -351,13 +396,12 @@ def generate_scene(character: dict[str, Any], scene: str, *,
             f"动作：{action}。\n"
             f"表情：{expr}。\n"
             f"场景：{scene}。\n"
-            + (f"人物外形参考：{look}。\n" if look else "")
-            + (f"画面风格：{st}。\n" if st else "")
-            + "整体像被朋友随手拍到的真实生活照，自然光，不要文字和水印。\n"
+            + photo.prompt_block(p, portrait=True) + "\n"
             # 明确禁止模型偷懒回到"证件照"构图
             + "避免：正面大头照、证件照式构图、正对镜头摆拍、影楼写真感、重复上一张的角度。\n"
             # 平台合规：公众号/头条对暴露、软色情会限流甚至封号
-            + "人物穿着日常得体的服装（通勤装/休闲装），不要暴露，不要低胸，构图健康、适合公开发布。"
+            + "人物穿着日常得体的服装（通勤装/休闲装），不要暴露，不要低胸，构图健康、适合公开发布。\n"
+            + photo.negative_clause(portrait=True)
         )
         provider = cfg.get("provider")
         if provider == "dashscope":
@@ -379,9 +423,10 @@ def generate_scene(character: dict[str, Any], scene: str, *,
     else:
         shot, action, expr = _SHOTS[int(shot_index) % len(_SHOTS)]
     prompt = build_prompt(scene, account, kind=kind, character=character,
+                          expression=expr, plan_idx=plan_idx,
                           extra=f"画面里要出现这个人。机位：{shot}。动作：{action}。"
                                 "不要正面大头照，不要证件照构图。")
-    url = _text_image(cfg, prompt, prefix="char")
+    url = _text_image(cfg, prompt, prefix="char", portrait=True)
     if return_meta:
         return {"url": url, "shot": shot, "action": action, "expression": expr,
                 "used_reference": False}
@@ -503,15 +548,21 @@ def _extract_image(d: dict) -> bytes:
     raise RuntimeError(f"生图接口没返回图片：{json.dumps(d, ensure_ascii=False)[:300]}")
 
 
-def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai") -> str:
-    """纯文字生图（三种后端）。人物一致性做不到，只能靠提示词描述长相。"""
+def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
+                portrait: bool = False) -> str:
+    """纯文字生图（三种后端）。人物一致性做不到，只能靠提示词描述长相。
+
+    SD 有独立的 negative_prompt 字段，这里直接把 photo 的负向词表接上去——
+    原来只写了 "text, watermark, logo, lowres, deformed" 五个词，压不住塑料感。
+    """
     provider = cfg.get("provider") or "images"
     base = (cfg.get("base_url") or "").rstrip("/")
     model = cfg.get("model") or ""
 
     if provider == "sd":
         d = _post(f"{base}/sdapi/v1/txt2img", cfg, {
-            "prompt": prompt, "negative_prompt": "text, watermark, logo, lowres, deformed",
+            "prompt": prompt,
+            "negative_prompt": ", ".join(photo.negative_terms(portrait=portrait)),
             "width": 1024, "height": 576, "steps": 24, "n_iter": 1,
         })
         imgs = d.get("images") or []

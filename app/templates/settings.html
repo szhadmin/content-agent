@@ -108,6 +108,20 @@
       绑了人物就按人物出图，做虚拟人物号用。
     </div>
   </div>
+  <div class="grid3">
+    <label class="f"><span>生图风格（写实取向）</span>
+      <select id="g-photostyle">
+        {% for s in photo_styles %}
+        <option value="{{ s.id }}" {{ 'selected' if photo_style==s.id }}>{{ s.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="note" style="grid-column:1 / -1;padding-bottom:6px">
+      选「像哪类照片」，决定焦距/光的方向/色温/颗粒这些参数，具体参数每次生成自动轮换。
+      提示词里不会再出现「8K」「细节丰富」这类词——它们是 AI 味的来源。
+      选完点下面「保存生图配置」生效。
+    </div>
+  </div>
   <div class="btnrow">
     <button class="primary" id="btn-save-image" type="button">保存生图配置</button>
     <button id="btn-test-image" type="button">测试生一张</button>
@@ -200,6 +214,7 @@ $('#btn-save-image').addEventListener('click', async (e) => {
         api_key: $('#g-key').value.trim(),
       },
       public_base: $('#g-publicbase').value.trim(),
+      photo_style: $('#g-photostyle').value,
     });
     toast('生图配置已保存', 'ok');
     $('#g-key').value = '';

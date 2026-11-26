@@ -87,8 +87,13 @@ def parse_tags(markdown: str) -> list[str]:
 
 def run_checks(title: str, digest: str, markdown: str,
                keywords: list[str] | None = None,
-               min_words: int = 500, max_words: int = 1000) -> dict[str, Any]:
-    """返回结构化体检结果。warnings 是提醒，blockers 是必须处理。"""
+               min_words: int = 500, max_words: int = 1000,
+               photo_mode: bool = False) -> dict[str, Any]:
+    """返回结构化体检结果。warnings 是提醒，blockers 是必须处理。
+
+    photo_mode=True 用于「人物日常」这类以图为主的稿子：反问标题、小标题、5-8 处加粗
+    都是长文那套规范，套在几句口语上只会互相打架，所以整段跳过。
+    """
     keywords = keywords or []
     words = cjk_count(markdown)
     stats = structure_stats(markdown)
@@ -112,20 +117,30 @@ def run_checks(title: str, digest: str, markdown: str,
         warnings.append(f"正文 {words} 汉字，超过 {max_words}，完读率会掉")
     if tlen > 15:
         warnings.append(f"标题 {tlen} 字，超过 15 字，列表页可能被截断")
-    if "？" not in (title or "") and "?" not in (title or ""):
-        warnings.append("标题里没有反问句，不符合「反问 + 结论」句式")
-    if stats["subheads"] == 0:
-        warnings.append("没有小标题，建议加 1-2 处")
-    elif stats["subheads"] > 3:
-        warnings.append(f"小标题 {stats['subheads']} 处，短文建议 1-2 处")
-    if stats["bold"] < 4:
-        warnings.append(f"加粗只有 {stats['bold']} 处，建议 5-8 处")
-    elif stats["bold"] > 10:
-        warnings.append(f"加粗 {stats['bold']} 处偏多，冲淡重点")
+    if photo_mode:
+        # 看图稿：标题本来就该是句大白话，小标题越少越好，加粗只用来点情绪
+        if stats["subheads"] > 2:
+            warnings.append(f"看图稿不建议加小标题（现在 {stats['subheads']} 处）")
+        if stats["bold"] > 3:
+            warnings.append(f"加粗 {stats['bold']} 处偏多，看图稿 0-2 处就够")
+    else:
+        if "？" not in (title or "") and "?" not in (title or ""):
+            warnings.append("标题里没有反问句，不符合「反问 + 结论」句式")
+        if stats["subheads"] == 0:
+            warnings.append("没有小标题，建议加 1-2 处")
+        elif stats["subheads"] > 3:
+            warnings.append(f"小标题 {stats['subheads']} 处，短文建议 1-2 处")
+        if stats["bold"] < 4:
+            warnings.append(f"加粗只有 {stats['bold']} 处，建议 5-8 处")
+        elif stats["bold"] > 10:
+            warnings.append(f"加粗 {stats['bold']} 处偏多，冲淡重点")
     if stats["paragraphs"] < 3:
         warnings.append("自然段偏少，段落块建议 4-6 个")
-    if len(tags) < 8:
-        warnings.append(f"话题标签只有 {len(tags)} 个，建议 8-10 个")
+    tag_min, tag_max = (2, 5) if photo_mode else (8, 10)
+    if len(tags) < tag_min:
+        warnings.append(f"话题标签只有 {len(tags)} 个，建议 {tag_min}-{tag_max} 个")
+    elif len(tags) > tag_max:
+        warnings.append(f"话题标签 {len(tags)} 个偏多，建议 {tag_min}-{tag_max} 个")
     if banned:
         blockers.append("命中违禁词：" + "、".join(sorted({b['word'] for b in banned})))
     if soft:

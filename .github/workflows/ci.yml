@@ -19,7 +19,9 @@ jobs:
       - name: 导入检查（能 import 就说明没有语法错/循环依赖）
         run: |
           python -c "import app.main; print('app.main ok')"
-          python -c "from app import pipeline, writer, render, aigen, characters, toutiao; print('modules ok')"
+          python -c "from app import pipeline, writer, render, aigen, characters, photo, toutiao; print('modules ok')"
+      - name: 生图提示词自检（轮换不重复、人像/静物字段、禁用 AI 味词）
+        run: python tools/show_photo_prompts.py --check
       - name: 渲染自检（13 套主题都要能出 HTML）
         run: |
           python - <<'PY'

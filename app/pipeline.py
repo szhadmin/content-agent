@@ -171,6 +171,17 @@ def image_quota(account: dict[str, Any]) -> int:
         return 4
 
 
+def check_kwargs(account: dict[str, Any] | None) -> dict[str, Any]:
+    """按内容模式给自检换一套阈值。
+
+    人物日常的稿子是「几百字 + 几张图」，用长文那套 500 字下限/5-8 处加粗去卡它，
+    界面上会一直挂着自相矛盾的建议，等于噪音。
+    """
+    if account and (account.get("content_mode") or "article") == "photo":
+        return {"min_words": 20, "max_words": 600, "photo_mode": True}
+    return {}
+
+
 def account_theme(account: dict[str, Any]) -> str:
     """这个号该用哪套排版主题。
 
@@ -345,7 +356,7 @@ def _run_photo_mode(article_id: int, art: dict[str, Any], acc: dict[str, Any],
     title = data["title"] or topic_text
     digest = data["digest"]
     result = checks.run_checks(title, digest, markdown, data["keywords"] or [],
-                               min_words=20, max_words=600)
+                               min_words=20, max_words=600, photo_mode=True)
     theme = account_theme(acc)
     html = render.render_markdown(markdown, theme=theme,
                                   font_size=(db.get_setting("font_size") or "medium"))
@@ -795,7 +806,7 @@ def _apply_images(article_id: int, markdown: str, meta: list[dict[str, Any]],
         "images_meta": json.dumps(meta, ensure_ascii=False),
         "images": [m.get("url", "") for m in meta],
         "checks": checks.run_checks(art.get("title") or "", art.get("digest") or "",
-                                    markdown, None),
+                                    markdown, None, **check_kwargs(acc)),
     }
     if cover_src is not None:
         fields["cover_path"] = str(_cover_for(article_id, art.get("title") or "", cover_src, theme))

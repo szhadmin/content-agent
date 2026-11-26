@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import aigen, characters, checks, cover as cover_mod, db, images, personas, pipeline, render, scheduler, security, topics, toutiao, writer
+from . import aigen, characters, checks, cover as cover_mod, db, images, personas, photo, pipeline, render, scheduler, security, topics, toutiao, writer
 from .prompts import DEFAULT_STYLE_PROMPT
 from .settings import (
     APP_NAME,
@@ -514,7 +514,8 @@ async def api_article_preview(article_id: int, request: Request):
                                   font_size=body.get("font_size") or (db.get_setting("font_size") or "medium"))
     info = render.inspect_html(html)
     result = checks.run_checks(body.get("title") or "", body.get("digest") or "", markdown,
-                               (art.get("images") or []))
+                               (art.get("images") or []),
+                               **pipeline.check_kwargs(acc))
     return ok(html=html, info=info, checks=result,
               blockers=render.draft_blockers(html, allow_pending_uploads=True),
               pending=render.pending_note(html))
@@ -1190,6 +1191,8 @@ async def settings_page(request: Request):
         image_llm=aigen.image_config(),
         public_base=public_base_url() or str(db.get_setting("public_base", "") or ""),
         ref_ready=aigen.reference_ready(),
+        photo_style=aigen.photo_style(),
+        photo_styles=photo.style_labels(),
         style_prompt=db.get_setting("style_prompt") or DEFAULT_STYLE_PROMPT,
         theme=db.get_setting("theme") or "default",
         font_size=db.get_setting("font_size") or "medium",
@@ -1243,6 +1246,10 @@ async def api_settings_save(request: Request):
                 "images_per_article", "image_rank_by_model", "max_data_images"):
         if key in body:
             db.set_setting(key, body[key])
+    if "photo_style" in body:
+        # 只接受 photo.STYLES 里有的 id，别把脏值写进库（提示词会直接用它）
+        sid = str(body.get("photo_style") or "").strip()
+        db.set_setting("photo_style", sid if sid in photo.STYLES else "auto")
     return ok()
 
 
