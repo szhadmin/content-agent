@@ -213,11 +213,14 @@ def generate_article(*, topic: str, author: str, extra: str = "",
         user.append(f"额外要求：{extra}")
     # 标题规则按平台来，不再把公众号那套硬塞给头条/点评
     user.append("标题规则：" + title_rule_for(platform))
+    tag_lo, tag_hi = TAG_COUNTS.get(platform, TAG_COUNTS["wechat"])
     user.append(
         "硬性要求：\n"
         "1. 纯正文控制在 500-800 汉字之间，超过 900 字这篇就作废。\n"
         "2. 正文里必须有 5-8 处 **加粗**（标在关键判断句上），1-2 个 ## 小标题，小标题不要带「一、二、三」序号。\n"
-        "3. 结尾留一句具体的互动提问，后面跟话题标签（公众号 8-10 个，头条/点评 3-5 个）。\n"
+        f"3. 结尾留一句具体的互动提问；然后**空一行，在全文最后单独一行**给 {tag_lo}-{tag_hi} 个 #话题标签。\n"
+        "   **只给这一组，不要再按平台分成「公众号话题」「头条话题」两块，也不要写平台名**——\n"
+        "   这篇稿子只会投一个平台，多写的那块会原样出现在读者面前。\n"
         "4. 只输出下面这个 JSON 结构，不要加别的字段，不要用 sections/paragraphs 嵌套：\n"
         '{"title": "符合上面标题规则的标题", "digest": "40-70字摘要", '
         '"keywords": ["标签1", "标签2"], "markdown": "完整正文 Markdown，含 ## 小标题和 **加粗**"}'
@@ -338,6 +341,84 @@ def write_photo_post(*, topic: str, account: dict | None = None, count: int = 3,
     keywords = [str(k).strip().lstrip("#") for k in raw_kw if str(k).strip()][:12]
     return {"title": title, "digest": digest[:120], "lines": got_lines,
             "scenes": scenes, "keywords": keywords}
+
+
+# --------------------------------------------------------------------------
+# 话题标签：收成一组，放最底部
+# --------------------------------------------------------------------------
+# 为什么需要这层后处理：提示词里写「按平台给标签」时，模型经常一次给出
+# 「公众号话题：…」和「头条/点评话题：…」两块，中间还夹着配图，读起来像两份稿子拼的。
+# 光靠提示词约束不住（模型时好时坏），所以出口再兜一遍：合并去重 → 只留一行 → 挪到最底。
+_HASHTAG = re.compile(r"#([\u4e00-\u9fffA-Za-z0-9_]{1,20})")
+# 平台名 → 标签数量上限（跟 personas.PLATFORM_RULES 保持一致）
+TAG_COUNTS = {"wechat": (8, 10), "toutiao": (3, 5), "dianping": (3, 5)}
+_PLATFORM_WORDS = {
+    "wechat": ("公众号", "微信"),
+    "toutiao": ("头条",),
+    "dianping": ("点评", "大众点评"),
+}
+
+
+def _tag_line_info(line: str) -> tuple[list[str], str]:
+    """判断这行是不是「纯标签行」，返回 (标签列表, 平台名)；不是就返回 ([], "")。
+
+    判据：至少 2 个 #话题，且把话题词抠掉后只剩标点/平台前缀——这样正文里
+    「#3 号链接」这种带井号的句子不会被误删。
+    """
+    t = line.strip()
+    if not t:
+        return [], ""
+    tags = _HASHTAG.findall(t)
+    if len(tags) < 2:
+        return [], ""
+    rest = _HASHTAG.sub("", t)
+    rest = re.sub(r"[\s，,、:：|/·\-—_【】\[\]（）()]+", "", rest)
+    rest = re.sub(r"(公众号|微信|头条|点评|大众点评|小红书|视频号|抖音|微博|话题|标签|和|及|的)", "", rest)
+    if len(rest) > 6:            # 抠完还剩一截说明是正文，不是标签行
+        return [], ""
+    platform = ""
+    for pid, words in _PLATFORM_WORDS.items():
+        if any(w in t for w in words):
+            platform = pid
+            break
+    return tags, platform
+
+
+def normalize_tags(markdown: str, platform: str = "wechat") -> str:
+    """把文末的多组话题标签合并成**一组**，并挪到全文最底部（配图之后）。
+
+    · 多块标签（公众号一块、头条一块）→ 合并去重，只留一行
+    · 数量按当前平台上限截断，当前平台那块排前面
+    · 正文里没有标签行就原样返回，不凭空造标签
+    """
+    md = markdown or ""
+    lines = md.split("\n")
+    platform = (platform or "wechat").strip() or "wechat"
+
+    primary: list[str] = []      # 当前平台那块的标签（排前面）
+    others: list[str] = []       # 无平台标注 / 别的平台那块
+    kept: list[str] = []
+    found = False
+    for ln in lines:
+        tags, tag_platform = _tag_line_info(ln)
+        if not tags:
+            kept.append(ln)
+            continue
+        found = True
+        bucket = primary if tag_platform == platform else others
+        for t in tags:
+            if t not in bucket:
+                bucket.append(t)
+    if not found:
+        return md
+
+    merged = primary + [t for t in others if t not in primary]
+    _, hi = TAG_COUNTS.get(platform, TAG_COUNTS["wechat"])
+    merged = merged[:hi]
+
+    while kept and not kept[-1].strip():      # 去掉尾部空行，标签贴在最底
+        kept.pop()
+    return "\n".join(kept + ["", " ".join("#" + t for t in merged)])
 
 
 COMPRESS_PROMPT = """把下面这篇公众号文章压到 {target} 汉字左右（±80 字）。

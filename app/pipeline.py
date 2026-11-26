@@ -565,6 +565,8 @@ def run_generation(article_id: int, *, extra: str = "", humanize: bool = False,
             markdown = render.normalize_markdown(writer.humanize(markdown))
         except writer.LLMError as exc:
             log_append(article_id, f"去 AI 味失败（已跳过）：{exc}")
+    # 标签只留一组、放最底部（模型经常一次给「公众号话题」「头条话题」两块）
+    markdown = writer.normalize_tags(markdown, acc.get("platform") or "wechat")
 
     title = data["title"] or topic_text
     digest = data["digest"]
@@ -982,6 +984,9 @@ def _apply_images(article_id: int, markdown: str, meta: list[dict[str, Any]],
     art = get_article(article_id)
     acc = get_account(art["account_id"])
     theme = account_theme(acc)
+    # 插图/换图/删图之后，标签行很可能被挤到图片上面去，这里统一再收一次：
+    # 只留一组、贴在最底部。幂等，重复调用没有副作用。
+    markdown = writer.normalize_tags(markdown, acc.get("platform") or "wechat")
     html = render.render_markdown(markdown, theme=theme,
                                   font_size=(db.get_setting("font_size") or "medium"))
     fields: dict[str, Any] = {
