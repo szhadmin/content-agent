@@ -194,6 +194,12 @@ button.mini,.mini{padding:4px 10px;font-size:12px;border-radius:8px}
 .imgcard.dragging{opacity:.45}
 .imgcard.over{border-color:var(--brand);background:var(--brand-soft)}
 .imgcard img{width:100%;height:88px;object-fit:cover;border-radius:7px;display:block;margin-bottom:7px}
+/* 图片文件丢了 / 加载失败时的占位块：和 img 同高，卡片不会跳版 */
+.imgcard .ph-missing{
+  width:100%;height:88px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;border:1px dashed #d9c2c2;border-radius:7px;background:#fdf6f6;color:#a3545c;
+  font-size:11.5px;text-align:center;line-height:1.35;margin-bottom:7px;
+}
 .imgcard .capin{
   width:100%;padding:5px 7px;font-size:11.5px;border:1px solid var(--line);
   border-radius:6px;margin-bottom:5px;font-family:inherit;

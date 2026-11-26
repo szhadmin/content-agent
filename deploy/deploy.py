@@ -34,6 +34,14 @@ from pathlib import Path
 
 import paramiko
 
+# Windows 控制台默认 GBK，服务端返回的 ✅ / 中文会在 print 时抛 UnicodeEncodeError，
+# 把部署打断在「装浏览器」那一步。这里直接把标准输出改成 UTF-8，脚本自身不再依赖外部设置。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 老 Python / 重定向到不支持的对象时忽略
+        pass
+
 HOST = os.environ.get("WXWB_SSH_HOST", "").strip()
 USER = os.environ.get("WXWB_SSH_USER", "root").strip()
 PASSWORD = os.environ.get("WXWB_SSH_PASS", "").strip()

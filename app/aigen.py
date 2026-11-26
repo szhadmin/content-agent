@@ -107,17 +107,41 @@ def _nsfw_params(cfg: dict[str, Any]) -> dict[str, Any]:
 
 # 服装/尺度措辞跟着 nsfw 开关走：
 #   关 → 按平台能发的写（公众号/头条对暴露、软色情会限流甚至封号）
-#   开 → 不主动加衣服也不主动脱，交给场景和参考图决定
+#   开 → 性感、身材曲线明确，但**服装始终遮住关键部位**（不漏点、不透视、不走光）
+# 开这一档的定位是「能发的性感」：肩颈锁骨手臂腰腹腿可以露，胸和下体必须被衣服盖住。
+# 明写「不漏点」而不是只写「性感」：单写性感时模型有一定概率直接给出裸露结果，
+# 那类图既过不了平台审核，也没法当正文配图用。
 _DRESS_SAFE = ("人物穿着日常得体的服装（通勤装/休闲装），不要暴露，不要低胸，"
                "构图健康、适合公开发布。")
-_DRESS_OPEN = ("人物服装按场景和参考图里的风格自然决定（通勤、居家、运动、泳装、贴身衣物都行），"
-               "以真实照片的穿着质感为准；不要为了遮挡额外加衣服，也不要刻意摆成影楼写真，"
-               "露肤程度跟着场景走。")
+_DRESS_OPEN = ("人物身材曲线明确、比例好看（腰细、腿长、胸部有体积感），"
+               "服装贴身、按场景和参考图的风格自然决定"
+               "（通勤、居家、运动、泳装、吊带、针织、贴身衣物都行），以真实照片的穿着质感为准；"
+               "**服装必须始终完整遮住胸部关键部位和下体，不露点、不透视、不走光、不出现裸露**，"
+               "露肤只限肩颈、锁骨、手臂、腰腹、腿部这些部位；"
+               "不要为了遮挡额外加厚衣服，也不要刻意摆成影楼写真的摆拍感。")
+
+# 开 nsfw 时额外压掉的词：把「露点」这类结果从负向侧也堵一遍。
+# 单条 prompt 的后端只吃十几个词，所以这几条是并进 negative_clause 里，不另起一段。
+_NSFW_NEG = ["裸露的胸部", "露点", "乳头", "下体裸露", "全裸", "透明到透出皮肤"]
 
 
 def _dress_clause(cfg: dict[str, Any]) -> str:
     """当前该用哪套服装措辞。设置页的「内容过滤」开关就是它。"""
     return _DRESS_OPEN if nsfw_on(cfg) else _DRESS_SAFE
+
+
+def _negative_clause(cfg: dict[str, Any], *, portrait: bool = True) -> str:
+    """负向段。开 nsfw 时把「露点」那几条并进去，从否定侧再堵一遍。
+
+    注意：这里不是加长提示词——`photo.negative_clause` 只挑十几个词，本函数替换掉
+    其中最不关键的几条，保证总长度基本不变（写太长模型会开始丢前面的指令）。
+    """
+    if not nsfw_on(cfg):
+        return photo.negative_clause(portrait=portrait)
+    terms = photo.negative_terms(portrait=portrait)
+    # 保留核心的几个「AI 味」词，把位置让给露点相关的词
+    keep = [t for t in photo._NEG_CORE if t in terms][:6]
+    return "画面里不要出现：" + "、".join(keep + _NSFW_NEG) + "。"
 
 
 def _scene_hint(account: dict | None) -> str:
@@ -194,7 +218,10 @@ def build_prompt(topic: str, account: dict | None = None, *, kind: str = "inline
         parts.append("画面主体明确，一眼能看出拍的是什么。")
     if extra:
         parts.append(f"额外要求：{extra}")
-    parts.append(photo.negative_clause(portrait=portrait))
+    if character:
+        # 绑了人物时的服装/尺度：开关决定「保守」还是「性感但不露点」
+        parts.append(_dress_clause(image_config()))
+    parts.append(_negative_clause(image_config(), portrait=portrait))
     return "\n".join(parts)
 
 
@@ -375,7 +402,8 @@ def _sd_reference(cfg: dict[str, Any], base: str, prompt: str,
     b64 = base64.b64encode(p.read_bytes()).decode()
     d = _post(f"{base}/sdapi/v1/img2img", cfg, {
         "prompt": prompt,
-        "negative_prompt": ", ".join(photo.negative_terms(portrait=True)),
+        "negative_prompt": ", ".join(photo.negative_terms(portrait=True)
+                                     + (_NSFW_NEG if nsfw_on(cfg) else [])),
         "init_images": [b64],
         "denoising_strength": 0.55,
         "steps": 28, "width": 1024, "height": 576, "n_iter": 1,
@@ -438,9 +466,9 @@ def generate_scene(character: dict[str, Any], scene: str, *,
             + photo.prompt_block(p, portrait=True) + "\n"
             # 明确禁止模型偷懒回到"证件照"构图
             + "避免：正面大头照、证件照式构图、正对镜头摆拍、影楼写真感、重复上一张的角度。\n"
-            # 服装/尺度：开关关着就是平台能发的写法，开着交给场景（见 _dress_clause）
+            # 服装/尺度：开关关着就是平台能发的写法，开着是「性感但服装盖住关键部位」
             + _dress_clause(cfg) + "\n"
-            + photo.negative_clause(portrait=True)
+            + _negative_clause(cfg, portrait=True)
         )
         provider = cfg.get("provider")
         if provider == "dashscope":
@@ -601,7 +629,8 @@ def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
     if provider == "sd":
         d = _post(f"{base}/sdapi/v1/txt2img", cfg, {
             "prompt": prompt,
-            "negative_prompt": ", ".join(photo.negative_terms(portrait=portrait)),
+            "negative_prompt": ", ".join(photo.negative_terms(portrait=portrait)
+                                         + (_NSFW_NEG if nsfw_on(cfg) else [])),
             "width": 1024, "height": 576, "steps": 24, "n_iter": 1,
             **_nsfw_params(cfg),
         })

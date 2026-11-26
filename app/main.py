@@ -464,7 +464,7 @@ async def article_page(request: Request, article_id: int):
                        theme=pipeline.account_theme(acc),
                        font_size=db.get_setting("font_size") or "medium",
                        cover_url=f"{URL_PREFIX}/media/articles/a{article_id}/cover.png?v={art['updated_at']}",
-                       images_meta=art.get("images_meta") or [],
+                       images_meta=pipeline.annotate_missing(art.get("images_meta") or []),
                        image_quota=pipeline.image_quota(acc),
                        character=characters.for_account(acc),
                        generating=(art.get("status") == "generating"))
@@ -636,7 +636,7 @@ def _art_state(article_id: int) -> dict[str, Any]:
         "markdown": art.get("markdown") or "",
         "log": art.get("log") or "",
         "checks": art.get("checks") or {},
-        "images_meta": art.get("images_meta") or [],
+        "images_meta": pipeline.annotate_missing(art.get("images_meta") or []),
         "error": art.get("error") or "",
         "tt_url": art.get("tt_url") or "",
         "tt_at": art.get("tt_at") or "",

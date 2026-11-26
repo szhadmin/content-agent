@@ -387,6 +387,14 @@ function renderChecks(c, info, blockers, pending) {
 }
 
 /* ---------------- 配图区：改图注 / 换一张 / 移除 / 拖拽排序 ---------------- */
+/* 图片加载失败时换成占位块：不留碎裂图标，也让人一眼知道该点「AI 重生成」 */
+function imgFail(img) {
+  const d = document.createElement('div');
+  d.className = 'ph-missing';
+  d.innerHTML = '图片加载失败<br /><span style="font-size:10.5px">点下面「AI 重生成」补一张</span>';
+  if (img.parentNode) img.parentNode.replaceChild(d, img);
+}
+
 function renderImages() {
   const meta = (state.images_meta || []).filter(m => m && m.url);
   $('#img-count').textContent = meta.length ? `${meta.length} 张` : '';
@@ -396,11 +404,15 @@ function renderImages() {
   } else {
     box.innerHTML = meta.map((m, i) => `
       <figure class="imgcard" draggable="true" data-idx="${i}" data-url="${esc(m.url)}">
-        <img src="{{ P }}${esc(m.url)}" alt="" />
+        ${m.missing
+          ? '<div class="ph-missing">图片文件丢失<br /><span style="font-size:10.5px">点下面「AI 重生成」补一张</span></div>'
+          : `<img src="{{ P }}${esc(m.url)}" alt="" onerror="imgFail(this)" />`}
         ${(m.score !== undefined && Number(m.score) <= 0)
           ? '<span class="badge warn" style="font-size:10px;margin-bottom:4px">相关性低</span>' : ''}
+        ${m.missing
+          ? '<span class="badge warn" style="font-size:10px;margin-bottom:4px">文件丢失</span>' : ''}
         <input class="capin" value="${esc(m.caption || '')}" placeholder="图注（留空则不显示）" />
-        <div class="note" style="font-size:10.5px">${m.width}×${m.height} · ${esc(m.site || m.source || '')}</div>
+        <div class="note" style="font-size:10.5px">${m.width || '?'}×${m.height || '?'} · ${esc(m.site || m.source || '')}</div>
         <div class="btnrow" style="gap:4px">
           <button data-ai="${esc(m.url)}" type="button" class="mini">AI 重生成</button>
           <button data-swap="${esc(m.url)}" type="button" class="mini">换一张</button>

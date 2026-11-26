@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,22 @@ from .settings import ARTICLE_DIR, PLATFORM_LABELS, UPLOAD_DIR
 from .wechat import WechatClient, WechatError, client_for
 
 IMG_MD = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+# 同一篇稿子的「AI 重生成」必须串行排队。
+# 一次重生成要 50~90 秒，用户连点三次时三个线程各自读到同一份旧正文，最后写入的那个把
+# 另外两个的替换顶掉；而被顶掉的原图在各自流程末尾已被删掉 —— 正文里就留下指向已删文件
+# 的 url（前端表现：碎裂图标 + undefined×undefined）。
+_IMG_LOCKS: dict[int, threading.Lock] = {}
+_IMG_LOCKS_GUARD = threading.Lock()
+
+
+def _img_lock(article_id: int) -> threading.Lock:
+    with _IMG_LOCKS_GUARD:
+        lk = _IMG_LOCKS.get(article_id)
+        if lk is None:
+            lk = threading.Lock()
+            _IMG_LOCKS[article_id] = lk
+        return lk
 
 
 class WrongPlatform(RuntimeError):
@@ -507,7 +524,8 @@ def _run_photo_mode(article_id: int, art: dict[str, Any], acc: dict[str, Any],
     save_article(article_id, title=title, digest=digest, markdown=markdown, html=html,
                  cover_path=str(cover_path), checks=result,
                  author=art.get("author") or acc.get("author") or "",
-                 images_meta=json.dumps([{"url": u, "caption": ""} for u in uploads],
+                 images_meta=json.dumps([{"url": u, "caption": "", "source": "ai",
+                                          "site": "AI 生成", **_url_dims(u)} for u in uploads],
                                         ensure_ascii=False))
     _set_stage(article_id, "done", "")
     log_append(article_id, f"生成完成：{len(uploads)} 张图、{len(lines)} 句文案")
@@ -936,6 +954,28 @@ def _imgs_meta(art: dict) -> list[dict[str, Any]]:
     return [m for m in meta if isinstance(m, dict)]
 
 
+def annotate_missing(meta: Any) -> list[dict[str, Any]]:
+    """给每张图标注本地文件还在不在，前端据此显示「文件丢失」而不是 undefined×undefined。
+
+    为什么要在出口统一标：卡片上的宽高、缩略图都依赖本地文件，文件没了就只剩一串
+    undefined 和碎裂图标，看不出是「图丢了」还是「页面坏了」。标出来之后前端能直接
+    提示「文件丢失，点 AI 重生成」，也方便脚本一键体检。
+    """
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = []
+    out: list[dict[str, Any]] = []
+    for m in meta or []:
+        if not isinstance(m, dict):
+            continue
+        u = m.get("url") or ""
+        gone = bool(u.startswith("/media/")) and _local_upload_path(u) is None
+        out.append({**m, "missing": True} if gone else m)
+    return out
+
+
 def _apply_images(article_id: int, markdown: str, meta: list[dict[str, Any]],
                   *, cover_src: str | None = None) -> dict[str, Any]:
     """写回正文 + 图片元数据，并重渲染（必要时重做封面）。"""
@@ -986,6 +1026,17 @@ def regen_ai_image(article_id: int, url: str, extra: str = "",
                    scene: str = "") -> dict[str, Any]:
     """把正文里某张图用 AI 重新生成，**就地替换**（可附加新的要求）。
 
+    同一篇稿子同时只允许一次重生成（`_img_lock`）：并发写入会互相覆盖，还会把仍在
+    正文里的原图删掉。后来的点击排队等前面那次跑完，排队耗时可忽略（用户本来就在等图）。
+    """
+    with _img_lock(article_id):
+        return _regen_ai_image_locked(article_id, url, extra, scene)
+
+
+def _regen_ai_image_locked(article_id: int, url: str, extra: str = "",
+                           scene: str = "") -> dict[str, Any]:
+    """真正的重生成逻辑。调用方必须已持有该稿件的锁。
+
     场景描述怎么来的：优先用调用方给的，其次取这张图上下文那句话
     （看图说话的稿子里，旁边那句文案就是画面内容），最后才退回文章标题。
     """
@@ -1008,6 +1059,12 @@ def regen_ai_image(article_id: int, url: str, extra: str = "",
     else:
         new_url = aigen.generate(prompt_scene, acc, extra=extra)
 
+    # 生成花了 50~90 秒，期间正文可能被别处改过（改图注、抓新图、另一张图重生成）。
+    # 重新读一次再改，绝不拿开头那份快照写回——那是丢图事故的直接原因。
+    art = get_article(article_id)
+    md = art.get("markdown") or ""
+    if old not in md:
+        raise RuntimeError(f"这张图在生成期间已被替换或移除，新图已存但没写进正文：{new_url}")
     # 正文替换（只换这一处）
     lines = []
     for ln in md.split("\n"):
@@ -1044,11 +1101,15 @@ def regen_ai_image(article_id: int, url: str, extra: str = "",
 
     out = _apply_images(article_id, new_md, meta, cover_src=cover_src)
 
-    # 旧图没人用了就删掉，免得反复重生成把磁盘撑爆
+    # 旧图没人用了才删，免得反复重生成把磁盘撑爆。
+    # 判断要覆盖正文 / 配图元数据 / images 列表 / 封面四条引用路径——只查 markdown 的话，
+    # 卡片里还挂着、正文却临时没引用的图会被误删（这次丢图就是这么放大的）。
     try:
-        if old.startswith("/media/uploads/"):
-            still = db.query_one("SELECT id FROM articles WHERE markdown LIKE ? AND id<>?",
-                                 (f"%{old}%", article_id))
+        if old.startswith("/media/uploads/") and old not in new_md:
+            still = db.query_one(
+                "SELECT id FROM articles WHERE id<>? AND (markdown LIKE ? OR images_meta LIKE ?"
+                " OR images LIKE ? OR cover_path LIKE ?)",
+                (article_id, f"%{old}%", f"%{old}%", f"%{old}%", f"%{old}%"))
             if not still:
                 p = _local_upload_path(old)
                 if p is not None:
