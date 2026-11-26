@@ -18,6 +18,10 @@
 这里默认走「不露脸/氛围感/平铺/街拍剪影」的提示词路线（见 build_prompt），
 既规避审核，也更适合当正文配图。要真人脸得自己在提示词里写，后果自负。
 
+**内容过滤开关（nsfw）**：设置页「AI 生图 → 内容过滤」开着时，请求体多带一个
+`"nsfw": true`（中转站认这个字段，官方原生接口会忽略），同时人物出图的服装措辞
+换成宽松版（`_dress_clause`）；关掉就是原来的保守写法，请求体一个多余字段都没有。
+
 **提示词怎么写得「像照片」**：全部交给 photo.py。那边按焦距/光圈、光的方向和色温、
 可数的质感细节、不完美构图和「动作进行中」来拼提示词，并且自带一组反 AI 味的负向词。
 这个文件只负责「把什么场景交给它」，不再自己堆形容词。
@@ -46,6 +50,10 @@ DEFAULT_IMAGE_CFG = {
     #   dashscope → 通义万相图像编辑 wanx2.1-imageedit
     #   images    → gpt-image-1 / Seeddream 这类支持 /images/edits 的
     "ref_model": "",
+    # 内容过滤开关：请求体里带 `"nsfw": true`。中转站（one-api / new-api 系）认这个字段，
+    # 用来放开被上游内容安全拦掉的写实提示词；官方原生接口不认，多余字段会被忽略。
+    # 配成 false 就彻底不发这个字段，等于走上游默认审核。
+    "nsfw": True,
 }
 
 # 按人设预设给一点「画面感」提示，别让美妆号生出科技感的图
@@ -81,6 +89,35 @@ def available() -> tuple[bool, str]:
     if not cfg.get("api_key") and cfg.get("provider") != "sd":
         return False, "还没配生图服务：到「设置 → AI 生图」填一个（智谱 CogView 有免费额度）"
     return True, ""
+
+
+def nsfw_on(cfg: dict[str, Any] | None = None) -> bool:
+    """当前配置要不要在请求体里带 `nsfw: true`。设置页「内容过滤」存的就是它。"""
+    cfg = cfg or image_config()
+    v = cfg.get("nsfw")
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "off", "no")
+    return bool(v)
+
+
+def _nsfw_params(cfg: dict[str, Any]) -> dict[str, Any]:
+    """JSON 请求体里要合并的额外参数。关掉时返回空 dict，请求体和以前完全一样。"""
+    return {"nsfw": True} if nsfw_on(cfg) else {}
+
+
+# 服装/尺度措辞跟着 nsfw 开关走：
+#   关 → 按平台能发的写（公众号/头条对暴露、软色情会限流甚至封号）
+#   开 → 不主动加衣服也不主动脱，交给场景和参考图决定
+_DRESS_SAFE = ("人物穿着日常得体的服装（通勤装/休闲装），不要暴露，不要低胸，"
+               "构图健康、适合公开发布。")
+_DRESS_OPEN = ("人物服装按场景和参考图里的风格自然决定（通勤、居家、运动、泳装、贴身衣物都行），"
+               "以真实照片的穿着质感为准；不要为了遮挡额外加衣服，也不要刻意摆成影楼写真，"
+               "露肤程度跟着场景走。")
+
+
+def _dress_clause(cfg: dict[str, Any]) -> str:
+    """当前该用哪套服装措辞。设置页的「内容过滤」开关就是它。"""
+    return _DRESS_OPEN if nsfw_on(cfg) else _DRESS_SAFE
 
 
 def _scene_hint(account: dict | None) -> str:
@@ -299,7 +336,8 @@ def _openai_reference(cfg: dict[str, Any], base: str, prompt: str,
                 f"{base}/images/edits",
                 headers={"Authorization": f"Bearer {cfg['api_key']}"},
                 timeout=120,
-                data={"model": model, "prompt": prompt, "n": "1", "size": sz},
+                data={"model": model, "prompt": prompt, "n": "1", "size": sz,
+                      **({"nsfw": "true"} if nsfw_on(cfg) else {})},
                 files=files)
             if r.status_code == 402:
                 # 账户积分/余额不足：换字段名也没用，直接报清楚，别白等四次
@@ -341,6 +379,7 @@ def _sd_reference(cfg: dict[str, Any], base: str, prompt: str,
         "init_images": [b64],
         "denoising_strength": 0.55,
         "steps": 28, "width": 1024, "height": 576, "n_iter": 1,
+        **_nsfw_params(cfg),
     })
     imgs = d.get("images") or []
     if not imgs:
@@ -399,8 +438,8 @@ def generate_scene(character: dict[str, Any], scene: str, *,
             + photo.prompt_block(p, portrait=True) + "\n"
             # 明确禁止模型偷懒回到"证件照"构图
             + "避免：正面大头照、证件照式构图、正对镜头摆拍、影楼写真感、重复上一张的角度。\n"
-            # 平台合规：公众号/头条对暴露、软色情会限流甚至封号
-            + "人物穿着日常得体的服装（通勤装/休闲装），不要暴露，不要低胸，构图健康、适合公开发布。\n"
+            # 服装/尺度：开关关着就是平台能发的写法，开着交给场景（见 _dress_clause）
+            + _dress_clause(cfg) + "\n"
             + photo.negative_clause(portrait=True)
         )
         provider = cfg.get("provider")
@@ -564,6 +603,7 @@ def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
             "prompt": prompt,
             "negative_prompt": ", ".join(photo.negative_terms(portrait=portrait)),
             "width": 1024, "height": 576, "steps": 24, "n_iter": 1,
+            **_nsfw_params(cfg),
         })
         imgs = d.get("images") or []
         if not imgs:
@@ -571,6 +611,7 @@ def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
         return _save_image(base64.b64decode(imgs[0]), prefix=prefix)
 
     if provider == "dashscope":
+        # 万相的参数是白名单校验的，塞 nsfw 会 400，所以这一家不发这个字段
         d = _post(f"{base}/services/aigc/text2image/image-synthesis", cfg, {
             "model": model or "wanx-v1",
             "input": {"prompt": prompt},
@@ -596,6 +637,7 @@ def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
     # 默认 OpenAI images 兼容（智谱/OpenAI/SiliconFlow）
     d = _post(f"{base}/images/generations", cfg, {
         "model": model, "prompt": prompt, "size": "1024x1024", "n": 1,
+        **_nsfw_params(cfg),
     })
     return _save_image(_extract_image(d), prefix=prefix)
 

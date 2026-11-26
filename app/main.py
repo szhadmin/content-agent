@@ -1244,6 +1244,9 @@ async def api_settings_save(request: Request):
         for k in ("provider", "base_url", "model", "ref_model"):
             if k in incoming and incoming[k]:
                 merged[k] = incoming[k]
+        # nsfw 是开关，得能把 true 改成 false，所以单独处理（不能走上面那个「空值不覆盖」的循环）
+        if "nsfw" in incoming:
+            merged["nsfw"] = aigen.nsfw_on({"nsfw": incoming["nsfw"]})
         if incoming.get("api_key"):
             merged["api_key"] = security.encrypt_secret(incoming["api_key"].strip())
         db.set_setting("image_llm", merged)

@@ -122,6 +122,18 @@
       选完点下面「保存生图配置」生效。
     </div>
   </div>
+  <div class="grid2">
+    <label class="f"><span>内容过滤（nsfw 参数）</span>
+      <select id="g-nsfw">
+        <option value="1" {{ 'selected' if image_llm.nsfw }}>开启 — 请求体带 nsfw: true</option>
+        <option value="0" {{ 'selected' if not image_llm.nsfw }}>关闭 — 不带该参数</option>
+      </select>
+    </label>
+    <div class="note" style="align-self:end;padding-bottom:12px">
+      生效于「OpenAI 兼容 images」和本地 SD 两种后端（中转站认这个字段）；
+      阿里万相的参数是白名单校验，这家不发。关掉就等于走上游默认审核。
+    </div>
+  </div>
   <div class="btnrow">
     <button class="primary" id="btn-save-image" type="button">保存生图配置</button>
     <button id="btn-test-image" type="button">测试生一张</button>
@@ -211,6 +223,7 @@ $('#btn-save-image').addEventListener('click', async (e) => {
         base_url: $('#g-base').value.trim(),
         model: $('#g-model').value.trim(),
         ref_model: $('#g-refmodel').value.trim(),
+        nsfw: $('#g-nsfw').value === '1',
         api_key: $('#g-key').value.trim(),
       },
       public_base: $('#g-publicbase').value.trim(),
