@@ -454,6 +454,67 @@ def image_queries(topic: str) -> list[str]:
     return out_words[:3]
 
 
+IMAGE_SCENE_PROMPT = """一篇文章要配 {count} 张图，图由 AI 生图生成。你只负责写「画面里有什么」。
+
+选题：{topic}
+
+正文（可能被截断）：
+{content}
+
+要求：
+1. 每条只写画面内容：拍什么、在哪、什么物件或动作、什么时刻。
+   **不要写镜头、焦距、光线、色调、画质、风格**——那些由程序统一加，你写了会打架。
+2. 每条对应正文里**不同的段落或小标题**，按正文出现顺序排，不要几张图都是同一个画面。
+3. 一句中文，15-40 字，具体到能画出来：「便利店冷柜前伸手拿酸奶，玻璃门上有雾」比
+   「都市生活的温度」强一百倍。不要形容词堆砌。
+4. 画面里不要出现文字、logo、界面截图、数据图表、PPT。
+5. 有人物时穿着日常得体、构图健康、适合公开发布；不要暴露、不要亲密或私房类画面。
+6. 一共 {count} 条，宁少勿凑。
+
+只输出 JSON 数组，元素是字符串：["画面描述1", "画面描述2"]
+"""
+
+
+def image_scenes(topic: str, markdown: str, count: int,
+                 account: dict[str, Any] | None = None) -> list[str]:
+    """给 AI 配图生成 count 条画面描述。失败时退化成「小标题 + 标题」，不会中断生成。"""
+    count = max(1, min(int(count or 1), 8))
+    content = (markdown or "")[:3000]
+    data: Any = []
+    try:
+        out = chat([
+            {"role": "system", "content": "你是摄影主题策划，只输出 JSON 数组。"},
+            {"role": "user", "content": IMAGE_SCENE_PROMPT.format(
+                count=count, topic=topic[:120], content=content)},
+        ], json_mode=True, temperature=0.75, timeout=90)
+        data = _extract_json(out)
+    except (LLMError, ValueError):
+        data = []
+    if isinstance(data, dict):
+        data = data.get("scenes") or data.get("items") or []
+    scenes: list[str] = []
+    for s in data if isinstance(data, list) else []:
+        s = str(s).strip().strip("。")
+        if 4 <= len(s) <= 90 and s not in scenes:
+            scenes.append(s)
+    scenes = scenes[:count]
+
+    # 补齐：模型没给够就用小标题凑，别让配图数量对不上
+    if len(scenes) < count:
+        heads = [m.group(1).strip() for m in re.finditer(r"^#{1,3}\s+(.+)$", markdown or "", re.M)]
+        pool = heads or [topic]
+        i = 0
+        while len(scenes) < count and i < count * 2:
+            base = pool[i % len(pool)]
+            cand = f"{topic}：{base}" if base and base != topic else topic
+            if cand not in scenes:
+                scenes.append(cand)
+            i += 1
+        while len(scenes) < count:
+            scenes.append(topic)
+    return scenes
+
+
 IMAGE_RANK_PROMPT = """一篇文章的选题是：{topic}
 
 下面是候选配图的「序号 | 标题 | 来源站 | 尺寸」。图我看不到，只能靠标题和来源判断，

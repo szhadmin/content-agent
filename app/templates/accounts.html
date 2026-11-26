@@ -76,11 +76,18 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
           </label>
           <label class="f" style="max-width:130px"><span>配图数量</span>
             <input type="number" id="n-images" min="0" max="8" value="4" /></label>
+          <label class="f" style="max-width:170px"><span>配图来源</span>
+            <select id="n-imgsrc">
+              <option value="web">联网抓图（免费）</option>
+              <option value="ai">AI 生图（按人设/人物，要额度）</option>
+              <option value="mixed">一半网图 + 一半 AI</option>
+            </select>
+          </label>
         </div>
         <label class="f"><span>专属写作规范（留空用全局）</span>
           <textarea id="n-style" rows="4" placeholder="预设会自动填，留空则用「设置」里的全局规范"></textarea>
         </label>
-        <label class="check"><input type="checkbox" id="n-cover" checked /> 封面用抓到的网图做底图</label>
+        <label class="check"><input type="checkbox" id="n-cover" checked /> 封面用第一张配图做底图</label>
         <label class="check"><input type="checkbox" id="n-default" /> 设为该平台的默认账号</label>
         <label class="check" data-only="wechat"><input type="checkbox" id="n-publish" /> 允许「正式发布」（没有发布权限的号别勾）</label>
         <p class="note" id="n-hint" style="margin:8px 0 0"></p>
@@ -118,6 +125,7 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
         {% if a.allow_publish %}<span class="badge warn">允许发布</span>{% endif %}
         <span class="badge">{{ themes.get(a.theme, {}).get('label', a.theme) if a.theme else '跟随全局主题' }}</span>
         <span class="badge">配图 {{ a.image_count or '跟随全局' }}</span>
+        <span class="badge">{{ {'ai': 'AI 图', 'mixed': '网图+AI'}.get(a.image_source or 'web', '网图') }}</span>
         {% if key == 'toutiao' %}
           {% set tt = tt_status.get(a.id) or {} %}
           {% if tt.logged_in %}<span class="badge green">已登录</span>
@@ -195,7 +203,20 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
           </label>
           <label class="f" style="max-width:120px"><span>配图数量</span>
             <input type="number" id="e-images-{{ a.id }}" min="0" max="8" value="{{ a.image_count or 0 }}" /></label>
+          <label class="f" style="max-width:170px"><span>配图来源</span>
+            <select id="e-imgsrc-{{ a.id }}">
+              <option value="web" {{ 'selected' if (a.image_source or 'web')=='web' }}>联网抓图（免费）</option>
+              <option value="ai" {{ 'selected' if a.image_source=='ai' }}>AI 生图（按人设/人物，要额度）</option>
+              <option value="mixed" {{ 'selected' if a.image_source=='mixed' }}>一半网图 + 一半 AI</option>
+            </select>
+          </label>
         </div>
+        <p class="note" style="margin:-4px 0 10px">
+          「联网抓图」是默认：按选题搜网图，不花钱但可能不够贴题；「AI 生图」按这个号的人设
+          （绑了虚拟人物就用那个人）逐张生成，每张 45~60 秒且吃生图额度；
+          「一半网图 + 一半 AI」先抓够一半，剩下的交给 AI。
+          <b>换了来源只影响之后生成的稿子</b>，老稿子要换图到稿件页点「重新配图」。
+        </p>
         <label class="f"><span>虚拟人物（AI 配图带这个人的长相；在「人物」页里建）</span>
           <select id="e-char-{{ a.id }}">
             <option value="0">不用人物（普通配图）</option>
@@ -219,7 +240,7 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
           「人物日常」模式下，生成=用虚拟人物出 N 张图 + 2~4 句生活化短文案，标题也走口语化，
           不写长文、不带加粗小标题。适合做纯晒人的虚拟人物号。<b>必须先绑人物。</b>
         </p>
-        <label class="check"><input type="checkbox" id="e-cover-{{ a.id }}" {{ 'checked' if a.cover_from_image }} /> 封面用网图做底图</label>
+        <label class="check"><input type="checkbox" id="e-cover-{{ a.id }}" {{ 'checked' if a.cover_from_image }} /> 封面用第一张配图做底图</label>
       </div>
       <div>
         <label class="f"><span>这个号专属的写作规范（留空用全局）</span>
@@ -305,6 +326,7 @@ $('#btn-add').addEventListener('click', async (e) => {
       topic_domain: $('#n-domain').value.trim(),
       theme: $('#n-theme').value,
       image_count: parseInt($('#n-images').value, 10) || 0,
+      image_source: $('#n-imgsrc').value,
       style_prompt: $('#n-style').value.trim(),
       cover_from_image: $('#n-cover').checked,
       is_default: $('#n-default').checked,
@@ -327,6 +349,7 @@ $$('[data-save]').forEach(b => b.addEventListener('click', async () => {
       topic_domain: $('#e-domain-' + id).value.trim(),
       theme: $('#e-theme-' + id).value,
       image_count: parseInt($('#e-images-' + id).value, 10) || 0,
+      image_source: $('#e-imgsrc-' + id).value,
       character_id: parseInt($('#e-char-' + id).value, 10) || 0,
       content_mode: $('#e-mode-' + id).value,
       photo_count: parseInt($('#e-photos-' + id).value, 10) || 3,

@@ -605,17 +605,20 @@ async def api_article_cover(article_id: int, request: Request):
 
 @app.post("/api/article/{article_id}/fetch_images")
 async def api_article_fetch_images(article_id: int, request: Request):
-    """按选题重新抓配图并插入正文（会替换上一次自动插的图）。"""
+    """按选题重新配图并插入正文（会替换上一次自动插的图）。
+
+    走 fill_images：来源看账号的 image_source，网图号抓图、AI 号生图，别让按钮行为和设置不一致。
+    """
     user, redirect = guard(request)
     if redirect:
         return redirect
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     want = body.get("want")
     try:
-        result = await asyncio.to_thread(pipeline.fetch_images_for, article_id, want)
+        result = await asyncio.to_thread(pipeline.fill_images, article_id, want)
     except Exception as exc:  # noqa: BLE001
-        log.exception("抓配图失败")
-        return fail(f"抓配图失败：{type(exc).__name__}: {exc}", 500)
+        log.exception("配图失败")
+        return fail(f"配图失败：{type(exc).__name__}: {exc}", 500)
     return ok(images=result.get("images") or [], note=result.get("note") or "",
               state=_art_state(article_id))
 
@@ -1058,6 +1061,8 @@ async def api_accounts_create(request: Request):
         "theme": (body.get("theme") or "").strip(),
         "topic_domain": (body.get("topic_domain") or "").strip(),
         "image_count": int(body.get("image_count") or 0),
+        "image_source": (body.get("image_source") if (body.get("image_source") or "web") in pipeline.IMAGE_SOURCES
+                         else "web"),
         "cover_from_image": 1 if body.get("cover_from_image", True) else 0,
         "character_id": int(body.get("character_id") or 0),
         "content_mode": ("photo" if (body.get("content_mode") or "article") == "photo"
@@ -1089,6 +1094,9 @@ async def api_accounts_update(account_id: int, request: Request):
             fields["image_count"] = max(0, min(int(body["image_count"] or 0), 8))
         except (TypeError, ValueError):
             fields["image_count"] = 0
+    if "image_source" in body:
+        src = (body.get("image_source") or "web").strip()
+        fields["image_source"] = src if src in pipeline.IMAGE_SOURCES else "web"
     if "cover_from_image" in body:
         fields["cover_from_image"] = 1 if body["cover_from_image"] else 0
     if "character_id" in body:

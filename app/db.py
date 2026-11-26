@@ -190,6 +190,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             "character_id": "INTEGER NOT NULL DEFAULT 0",
             # 内容模式：article=长文；photo=人物日常（几张图+几句口语，做虚拟人物号用）
             "content_mode": "TEXT NOT NULL DEFAULT 'article'",
+            # 配图来源：web=联网抓图（默认）；ai=AI 生图；mixed=一半网图一半 AI
+            "image_source": "TEXT NOT NULL DEFAULT 'web'",
             # 人物日常模式生成几张图
             "photo_count": "INTEGER NOT NULL DEFAULT 3",
         },

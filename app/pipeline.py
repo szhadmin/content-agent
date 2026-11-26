@@ -193,6 +193,38 @@ def account_theme(account: dict[str, Any]) -> str:
     return (account.get("theme") or "").strip() or (db.get_setting("theme") or "default")
 
 
+# 配图来源。以前只有「联网抓图」一条路，AI 生图只能一张张在稿件页手动换，
+# 于是「我在设置里配了生图，怎么草稿里还是网图」变成了最常见的困惑。
+IMAGE_SOURCES: dict[str, str] = {
+    "web": "联网抓图",
+    "ai": "AI 生图",
+    "mixed": "一半网图 + 一半 AI",
+}
+
+
+def image_source(account: dict[str, Any] | None) -> str:
+    """账号的配图来源，脏值一律当 web（跟老行为一致，不会突然改成花钱生图）。"""
+    v = str((account or {}).get("image_source") or "web").strip()
+    return v if v in IMAGE_SOURCES else "web"
+
+
+def _strip_prev_images(art: dict[str, Any]) -> str:
+    """去掉上一次自动插进正文的图，避免重跑一次就多一套图。"""
+    markdown = art.get("markdown") or ""
+    prev = art.get("images_meta") or []
+    if isinstance(prev, str):
+        try:
+            prev = json.loads(prev)
+        except ValueError:
+            prev = []
+    for m in prev:
+        if not isinstance(m, dict):
+            continue
+        markdown = markdown.replace(f"\n\n![{m.get('caption','')}]({m.get('url','')})", "")
+        markdown = markdown.replace(f"![{m.get('caption','')}]({m.get('url','')})", "")
+    return markdown
+
+
 def fetch_images_for(article_id: int, want: int | None = None) -> dict[str, Any]:
     """按当前选题去网上抓配图，插进正文，并用其中一张做封面。"""
     art = get_article(article_id)
@@ -245,19 +277,7 @@ def fetch_images_for(article_id: int, want: int | None = None) -> dict[str, Any]
     if not images:
         return {"images": [], "note": "候选图都没通过校验"}
 
-    markdown = art.get("markdown") or ""
-    # 先去掉上一次自动插进去的图，避免越插越多
-    prev = art.get("images_meta") or []
-    if isinstance(prev, str):
-        try:
-            prev = json.loads(prev)
-        except ValueError:
-            prev = []
-    for m in prev:
-        if not isinstance(m, dict):
-            continue
-        markdown = markdown.replace(f"\n\n![{m.get('caption','')}]({m.get('url','')})", "")
-        markdown = markdown.replace(f"![{m.get('caption','')}]({m.get('url','')})", "")
+    markdown = _strip_prev_images(art)
     markdown = imgsource.insert_into_markdown(markdown, images)
 
     # 兜底：如果正文里依然没有图片行，说明 Markdown 结构异常，规范化后重插
@@ -281,6 +301,128 @@ def fetch_images_for(article_id: int, want: int | None = None) -> dict[str, Any]
                  images=[m["url"] for m in images])
     log_append(article_id, f"配图已插入正文，封面用{'网图' if cover_src else '纯色底'}")
     return {"images": images, "cover": str(cover_path)}
+
+
+def _url_dims(url: str) -> dict[str, int]:
+    """本地图片的实际宽高（配图卡片靠它算比例，缺了会显示成方块）。"""
+    p = _local_upload_path(url)
+    if p is None:
+        return {}
+    try:
+        from PIL import Image
+        with Image.open(p) as im:
+            return {"width": im.size[0], "height": im.size[1]}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def generate_ai_images_for(article_id: int, want: int | None = None,
+                           account: dict[str, Any] | None = None, *,
+                           append: bool = False) -> dict[str, Any]:
+    """用 AI 生图给正文配 N 张图（账号 image_source=ai / mixed 时走这里）。
+
+    和 fetch_images_for 的差别只有「图从哪来」：插入位置、封面、元数据、日志全部复用同一套，
+    否则两条链路迟早写出两种行为（这正是这个项目里最容易复发的一类 bug）。
+
+    append=True 用于混合模式：不动正文里已有的图，只在后面补几张。
+    """
+    art = get_article(article_id)
+    acc = account or get_account(art["account_id"])
+    want = image_quota(acc) if want is None else max(0, min(int(want), 8))
+    if want <= 0:
+        return {"images": [], "note": "配图数量设为 0，跳过"}
+
+    ok, why = aigen.available()
+    if not ok:
+        # 这里不静默跳过：账号明说了要 AI 图，退回网图会让人以为设置没生效
+        raise RuntimeError(why)
+
+    topic = art.get("title") or ""
+    if art.get("topic_id"):
+        row = db.query_one("SELECT title FROM topics WHERE id=?", (art["topic_id"],))
+        if row and row["title"]:
+            topic = row["title"]
+
+    ch = characters.for_account(acc)
+    log_append(article_id, f"AI 配图：{topic[:40]}（要 {want} 张"
+                           + (f"｜人物：{ch['name']}" if ch else "") + "）")
+    scenes = writer.image_scenes(topic, art.get("markdown") or "", want, acc)
+    log_append(article_id, "画面：" + "；".join(s[:24] for s in scenes))
+
+    images: list[dict[str, Any]] = []
+    for i, scene in enumerate(scenes, 1):
+        _set_stage(article_id, "images", f"正在生成第 {i}/{len(scenes)} 张 AI 配图")
+        try:
+            if ch:
+                url = aigen.generate_scene(ch, scene, account=acc, kind="inline")
+            else:
+                url = aigen.generate(scene, acc, kind="inline")
+            images.append({"url": url, "caption": "", "source": "ai", "site": "AI 生成",
+                           **_url_dims(url)})
+            log_append(article_id, f"第 {i} 张完成：{url}")
+        except Exception as exc:  # noqa: BLE001 - 单张失败不该让整篇稿子作废
+            log_append(article_id, f"第 {i} 张失败（跳过）：{type(exc).__name__}: {str(exc)[:120]}")
+    if not images:
+        raise RuntimeError("AI 配图一张都没生成出来：检查「设置 → AI 生图」的模型和余额")
+
+    markdown = (art.get("markdown") or "") if append else _strip_prev_images(art)
+    markdown = imgsource.insert_into_markdown(markdown, images)
+    if "![" not in markdown:
+        fixed = render.normalize_markdown(markdown)
+        markdown = imgsource.insert_into_markdown(fixed, images)
+        if "![" not in markdown:
+            log_append(article_id, "⚠ 配图未能插入正文，请手动在编辑器里插图")
+
+    theme = account_theme(acc)
+    html = render.render_markdown(markdown, theme=theme,
+                                  font_size=(db.get_setting("font_size") or "medium"))
+    meta = (_imgs_meta(art) if append else []) + images
+    # 混合模式下封面在第一轮（网图）就做好了，别用 AI 图再压一次
+    cover_src = None
+    if not append and acc.get("cover_from_image", 1):
+        cover_src = str(_local_upload_path(images[0]["url"]) or "")
+    cover_path = _cover_for(article_id, art.get("title") or "", cover_src or None, theme)
+
+    save_article(article_id, markdown=markdown, html=html,
+                 cover_path=str(cover_path),
+                 images_meta=json.dumps(meta, ensure_ascii=False),
+                 images=[m["url"] for m in meta])
+    log_append(article_id, f"AI 配图 {len(images)} 张已插入正文")
+    return {"images": images, "cover": str(cover_path)}
+
+
+def fill_images(article_id: int, want: int | None = None,
+                account: dict[str, Any] | None = None) -> dict[str, Any]:
+    """按账号的「配图来源」决定走哪条链路。生成流程和稿件页「重新配图」都调这一个入口。
+
+    - web   只有网图（老行为）
+    - ai    全 AI
+    - mixed 先抓一半网图，再补 AI；网图抓不到就全交给 AI
+    """
+    art = get_article(article_id)
+    acc = account or get_account(art["account_id"])
+    want = image_quota(acc) if want is None else max(0, min(int(want), 8))
+    src = image_source(acc)
+
+    if src == "ai":
+        return generate_ai_images_for(article_id, want, acc)
+
+    if src == "mixed" and want >= 2:
+        n_web = want - want // 2
+        web = fetch_images_for(article_id, n_web)
+        got = web.get("images") or []
+        rest = want - len(got)
+        if rest <= 0:
+            return web
+        try:
+            ai = generate_ai_images_for(article_id, rest, acc, append=bool(got))
+        except Exception as exc:  # noqa: BLE001 - 网图已经有了，AI 这半挂了不至于开天窗
+            log_append(article_id, f"AI 补图失败（保留网图）：{type(exc).__name__}: {str(exc)[:120]}")
+            return web
+        return {"images": got + (ai.get("images") or []),
+                "cover": web.get("cover") or ai.get("cover")}
+
+    return fetch_images_for(article_id, want)
 
 
 def _photo_post_markdown(lines: list[str], image_urls: list[str]) -> str:
@@ -437,11 +579,12 @@ def run_generation(article_id: int, *, extra: str = "", humanize: bool = False,
         db.update("topics", topic_row["id"],
                   {"keywords": json.dumps(kw, ensure_ascii=False)})
 
-    # 配图 + 封面取图
-    _set_stage(article_id, "images", "正在抓配图")
+    # 配图 + 封面取图（来源看账号的 image_source：网图 / AI / 混合）
+    src_label = IMAGE_SOURCES[image_source(acc)]
+    _set_stage(article_id, "images", f"正在配图（{src_label}）")
     if with_images:
         try:
-            fetch_images_for(article_id, image_quota(acc))
+            fill_images(article_id, image_quota(acc), acc)
         except Exception as exc:  # noqa: BLE001 - 配图失败不该让整篇稿子作废
             log_append(article_id, f"配图失败（已跳过）：{type(exc).__name__}: {exc}")
 
