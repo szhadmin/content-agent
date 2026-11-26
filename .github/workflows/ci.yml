@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  import-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 装依赖
+        run: pip install -r requirements.txt
+      - name: 导入检查（能 import 就说明没有语法错/循环依赖）
+        run: |
+          python -c "import app.main; print('app.main ok')"
+          python -c "from app import pipeline, writer, render, aigen, characters, toutiao; print('modules ok')"
+      - name: 渲染自检（13 套主题都要能出 HTML）
+        run: |
+          python - <<'PY'
+          from app import render
+          md = "## 小标题\n\n正文一段，**加粗**一下。\n\n![](/media/uploads/x.png)\n\n> 引用"
+          for name in render.THEMES:
+              html = render.render_markdown(md, theme=name)
+              assert "<img" in html and "style=" in html, name
+          print(f"{len(render.THEMES)} 套主题渲染通过")
+          PY
