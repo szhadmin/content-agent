@@ -125,7 +125,11 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
         {% if a.allow_publish %}<span class="badge warn">允许发布</span>{% endif %}
         <span class="badge">{{ themes.get(a.theme, {}).get('label', a.theme) if a.theme else '跟随全局主题' }}</span>
         <span class="badge">配图 {{ a.image_count or '跟随全局' }}</span>
+        {% if (a.content_mode or 'article') == 'photo' %}
+        <span class="badge">AI 图（人物日常）</span>
+        {% else %}
         <span class="badge">{{ {'ai': 'AI 图', 'mixed': '网图+AI'}.get(a.image_source or 'web', '网图') }}</span>
+        {% endif %}
         {% if key == 'toutiao' %}
           {% set tt = tt_status.get(a.id) or {} %}
           {% if tt.logged_in %}<span class="badge green">已登录</span>
@@ -216,6 +220,7 @@ AppSecret 加密存本地库，界面上只显示掩码。</p>
           （绑了虚拟人物就用那个人）逐张生成，每张 45~60 秒且吃生图额度；
           「一半网图 + 一半 AI」先抓够一半，剩下的交给 AI。
           <b>换了来源只影响之后生成的稿子</b>，老稿子要换图到稿件页点「重新配图」。
+          注意：「人物日常」模式固定用 AI 出人物图，这个开关对它不起作用。
         </p>
         <label class="f"><span>虚拟人物（AI 配图带这个人的长相；在「人物」页里建）</span>
           <select id="e-char-{{ a.id }}">
