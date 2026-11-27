@@ -143,9 +143,13 @@ def _negative_clause(cfg: dict[str, Any], *, portrait: bool = True) -> str:
     """
     if not nsfw_on(cfg):
         return photo.negative_clause(portrait=portrait)
-    terms = photo.negative_terms(portrait=portrait)
-    # 保留核心的几个「AI 味」词，把位置让给露点相关的词
-    keep = [t for t in photo._NEG_CORE if t in terms][:6]
+    # 直接用核心表，不要再拿它跟完整词表取交集——`_NEG_CORE` 里是「短写版」
+    # 的说法（比如"画面里任何文字/招牌/价签/水印"），完整词表里没有逐字相同的条目，
+    # 一取交集就会被整条过滤掉，结果压文字的约束静默消失。
+    keep = list(photo._NEG_CORE)
+    if not portrait:
+        keep = [t for t in keep if t not in ("塑料感皮肤", "过度磨皮", "完美对称的脸")]
+    keep = keep[:10]
     return "画面里不要出现：" + "、".join(keep + _NSFW_NEG) + "。"
 
 
@@ -226,6 +230,8 @@ def build_prompt(topic: str, account: dict | None = None, *, kind: str = "inline
     if character:
         # 绑了人物时的服装/尺度：开关决定「保守」还是「性感但不露点」
         parts.append(_dress_clause(image_config()))
+    # 正向的解剖约束放在负向词前面：先说要什么样，再说不要什么
+    parts.append(photo.ANATOMY_RULE)
     parts.append(_negative_clause(image_config(), portrait=portrait))
     return "\n".join(parts)
 
@@ -289,7 +295,11 @@ def _dashscope_reference(cfg: dict[str, Any], base: str, prompt: str,
             "prompt": prompt,
             "base_image_url": _abs_url(refs[0]),
         },
-        "parameters": {"n": 1},
+        "parameters": {
+            "n": 1,
+            # 万相对图像编辑也吃 negative_prompt，穿模/多手多脚靠它压
+            "negative_prompt": "，".join(photo.negative_terms(portrait=True)[:24]),
+        },
     }, headers={"X-DashScope-Async": "enable"})
     task_id = (d.get("output") or {}).get("task_id")
     if not task_id:
@@ -471,6 +481,8 @@ def generate_scene(character: dict[str, Any], scene: str, *,
             + photo.prompt_block(p, portrait=True) + "\n"
             # 明确禁止模型偷懒回到"证件照"构图
             + "避免：正面大头照、证件照式构图、正对镜头摆拍、影楼写真感、重复上一张的角度。\n"
+            # 穿模是全身图最容易翻的车：给正向的解剖约束，别只堆否定词
+            + photo.ANATOMY_RULE + "\n"
             # 服装/尺度：开关关着就是平台能发的写法，开着是「性感但服装盖住关键部位」
             + _dress_clause(cfg) + "\n"
             + _negative_clause(cfg, portrait=True)
@@ -649,7 +661,12 @@ def _text_image(cfg: dict[str, Any], prompt: str, *, prefix: str = "ai",
         d = _post(f"{base}/services/aigc/text2image/image-synthesis", cfg, {
             "model": model or "wanx-v1",
             "input": {"prompt": prompt},
-            "parameters": {"size": "1280*720", "n": 1},
+            "parameters": {
+                "size": "1280*720",
+                "n": 1,
+                # 结构类负向词：万相白名单里有 negative_prompt，塞 nsfw 才会 400
+                "negative_prompt": "，".join(photo.negative_terms(portrait=portrait)[:24]),
+            },
         }, headers={"X-DashScope-Async": "enable"})
         # 万相是异步的：先拿 task_id，再轮询
         task_id = (d.get("output") or {}).get("task_id")
