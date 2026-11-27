@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import platform
@@ -933,6 +934,132 @@ def _paste_html(page: Any, html: str, text: str, log: Callable[[str], None]) -> 
         return False
 
 
+_PASTE_FILE_JS = """(p) => {
+    const bin = atob(p.b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const file = new File([arr], p.name, {type: p.mime});
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const el = document.querySelector('.ProseMirror');
+    if (!el) return false;
+    el.focus();
+    // 必须是真的 paste 事件：ProseMirror 自己处理 files → 走头条的上传管线
+    el.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: dt, bubbles: true, cancelable: true,
+    }));
+    return true;
+}"""
+
+
+def _img_count(page: Any) -> int:
+    try:
+        return int(page.evaluate(
+            "() => document.querySelectorAll('.ProseMirror img').length"))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _paste_image_file(page: Any, path: str, say: Callable[[str], None]) -> bool:
+    """把图片文件本身粘进编辑器，交给头条自己的上传器。
+
+    这是唯一能让图片**真正被服务端接受**的插法：
+    - 直接粘 `<img src="外链">` → 编辑器留下序列化不出去的坏节点，保存 7050
+    - 粘文件 → 头条上传到 image_tt_private，插入正规节点，保存正常
+    """
+    p = Path(path)
+    try:
+        raw = p.read_bytes()
+    except Exception as exc:  # noqa: BLE001
+        say(f"读不到图片 {p.name}：{str(exc)[:60]}")
+        return False
+    if len(raw) > 12 * 1024 * 1024:
+        say(f"{p.name} 超过 12MB，头条粘贴可能失败，跳过")
+        return False
+    mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+    before = _img_count(page)
+    try:
+        page.evaluate(_PASTE_FILE_JS, {
+            "b64": base64.b64encode(raw).decode(), "mime": mime, "name": p.name})
+    except Exception as exc:  # noqa: BLE001
+        say(f"{p.name} 粘贴失败：{str(exc)[:80]}")
+        return False
+    # 头条要上传+回填，慢的时候十几秒
+    for _ in range(30):
+        page.wait_for_timeout(600)
+        if _img_count(page) > before:
+            return True
+    say(f"{p.name} 粘进去了但没出现图片节点")
+    return False
+
+
+def _fill_body_segments(page: Any, segments: list[tuple[str, str, str]],
+                        say: Callable[[str], None]) -> bool:
+    """按顺序把「文字段 / 图片」写进编辑器。
+
+    每次操作前都把光标按到文末：粘贴和文件粘贴都是"插在光标处"，
+    光标永远在末尾，顺序自然就对，也不会互相覆盖（逐块粘贴覆盖的坑踩过一次）。
+    """
+    want = sum(len(re.sub(r"\s", "", s[2])) for s in segments if s[0] == "text")
+    floor = max(20, int(want * 0.5))
+    ok_imgs = 0
+    fail_imgs = 0
+
+    for attempt in range(1, 4):
+        try:
+            ed = _first_visible(page, BODY_SELECTORS, timeout=4000)
+            if ed is not None:
+                ed.click(timeout=4000, force=True)
+                page.wait_for_timeout(300)
+        except Exception:  # noqa: BLE001
+            pass
+
+        if _body_len(page) > 0:
+            # 重试时先清空，避免叠加出两倍内容
+            try:
+                page.keyboard.press("Control+a")
+                page.keyboard.press("Delete")
+                page.wait_for_timeout(200)
+            except Exception:  # noqa: BLE001
+                pass
+
+        ok_imgs = fail_imgs = 0
+        for kind, payload, text in segments:
+            try:
+                ed = _first_visible(page, BODY_SELECTORS, timeout=3000)
+                if ed is not None:
+                    ed.click(timeout=3000, force=True)
+                page.keyboard.press("Control+End")
+                page.wait_for_timeout(120)
+            except Exception:  # noqa: BLE001
+                pass
+
+            if kind == "text":
+                if payload.strip():
+                    if not _paste_html(page, payload, text, say):
+                        try:
+                            page.keyboard.insert_text(text)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    page.wait_for_timeout(250)
+            else:
+                if _paste_image_file(page, payload, say):
+                    ok_imgs += 1
+                    say(f"图片进正文 {ok_imgs} 张")
+                else:
+                    fail_imgs += 1
+                    say(f"第 {ok_imgs + fail_imgs} 张图没进去")
+
+        page.wait_for_timeout(800)
+        got = _body_len(page)
+        if got >= floor:
+            say(f"正文已填入 {got} 字，图片 {ok_imgs} 张（失败 {fail_imgs} 张）")
+            return True
+        say(f"正文没落进去（第 {attempt} 次，编辑器 {max(got, 0)} 字 / 预期 {want} 字），重试")
+
+    return False
+
+
 def _open_image_drawer(page: Any, say: Callable[[str], None]) -> bool:
     """点工具栏「图片」按钮，打开上传抽屉。返回是否打开成功。
 
@@ -1104,7 +1231,48 @@ def _wall_message(wall: tuple[str, str], shot: str, account_name: str) -> tuple[
 # 主流程
 # --------------------------------------------------------------------------
 
-def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
+def _strip_body_images(article: dict[str, Any]) -> dict[str, Any]:
+    """去掉正文里的图片行，只留文字。兜底用。"""
+    md = article.get("markdown") or ""
+    keep = [ln for ln in md.split("\n") if not _img_line.match(ln.strip())]
+    return {**article, "markdown": "\n".join(keep)}
+
+
+# 这些字样说明是「保存被拒」，跟登录失效/账号被封（需要人处理）不是一回事，
+# 只有这一类才值得退成纯文字再存一次。
+_SAVE_FAIL_HINTS = ("7050", "保存失败", "空壳", "没发出保存请求", "草稿箱没查到")
+
+
+def create_draft(article: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """存草稿；带图版本被头条拒收时，自动退成纯文字再存一次。
+
+    什么时候会走兜底：头条对「正文带图」的稿子返回 7050（2026-11 实测：
+    同样一篇文字，不带图能存、带图就 7050，且服务端收到的 content 里压根没有
+    <img>——图被它的编辑器吞掉了，但保存仍然被拒）。
+    与其让用户两手空空，不如先把文字版存进草稿箱，并明确告诉他图片要手动补。
+    """
+    log = kwargs.get("log")
+    say = log or (lambda _s: None)
+    try:
+        return _create_draft_once(article, **kwargs)
+    except (LoginRequired, ManualActionRequired):
+        raise
+    except ToutiaoError as exc:
+        msg = str(exc)
+        has_img = any(_img_line.match((ln or "").strip())
+                      for ln in (article.get("markdown") or "").split("\n"))
+        if not has_img or not any(h in msg for h in _SAVE_FAIL_HINTS):
+            raise
+        say("头条拒收带图版本，改成纯文字再存一次…")
+        out = _create_draft_once(_strip_body_images(article), **kwargs)
+        out["fallback_no_images"] = True
+        out["note"] = ("正文图片被头条拒收（7050），这次只存进了纯文字版草稿；"
+                       "图片已经在头条图床里，到头条编辑器里手动插入一下即可")
+        say(out["note"])
+        return out
+
+
+def _create_draft_once(article: dict[str, Any], *, account_id: int | str = 0,
                  account_name: str = "", theme: str = "default",
                  font_size: str = "medium", headless: bool | None = None,
                  log: Callable[[str], None] | None = None) -> dict[str, Any]:
@@ -1169,14 +1337,44 @@ def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
                     # 这次请求带了多少正文？标题一填完那次是空的，不能算数。
                     try:
                         clen = len((parse_qs(data).get("content") or [""])[0])
+                        raw_content = (parse_qs(data).get("content") or [""])[0]
+                        save_params["content_sample"] = raw_content[:900]
+                        # 正文里到底有没有图、图链长什么样（头条拒收时这是关键线索）
+                        save_params["img_tags"] = json.dumps(
+                            re.findall(r'<img[^>]{0,300}?>', raw_content)[:5],
+                            ensure_ascii=False)
+                        # 全部表单字段（token 类打码），排查「同样的正文为什么这次 7050」需要它
+                        qs = parse_qs(data)
+                        brief = {}
+                        for k, v in qs.items():
+                            val = v[0] if v else ""
+                            if k.lower() in ("mstoken", "a_bogus", "_signature", "signature"):
+                                brief[k] = "<redacted>"
+                            elif k == "content":
+                                brief[k] = f"<{len(val)} chars>"
+                            else:
+                                brief[k] = val[:160]
+                        save_params["fields"] = json.dumps(brief, ensure_ascii=False)
                     except Exception:  # noqa: BLE001
                         clen = 0
                     save_params["clen"] = str(clen)
+                    # 顺手记下风控看的那几个头，出问题时一眼能看出覆盖有没有生效
+                    try:
+                        h = resp.request.headers or {}
+                        save_params["hdr"] = json.dumps({
+                            k: v for k, v in h.items()
+                            if k.lower() in ("sec-ch-ua", "sec-ch-ua-mobile",
+                                             "sec-ch-ua-platform", "user-agent",
+                                             "referer", "content-type")
+                        }, ensure_ascii=False)
+                    except Exception:  # noqa: BLE001
+                        pass
                     try:
                         txt = resp.text()
                     except Exception as exc:  # noqa: BLE001
                         save_params["read_err"] = str(exc)[:80]
                         return
+                    save_params["resp"] = txt[:1500]
                     if '"code":0' in txt:
                         # 只有这次请求真的带了正文（够长）才算"保存成功"
                         if clen >= max(min_content, 30):
@@ -1238,58 +1436,52 @@ def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
                 _safe_click(editor, say, "正文编辑器")
             page.wait_for_timeout(500)
 
-            # ---- 批量上传本地图片到头条图床 ----
-            # 头条编辑器不吃本地路径，必须换成它自己 CDN 的地址才能显示。
-            local_imgs = [Path(b["path"]) for b in payload["blocks"]
-                          if b["type"] == "image" and b.get("path")]
-            cdn_map: dict[str, str] = {}
-            if local_imgs:
-                say(f"上传正文图片 {len(local_imgs)} 张到头条图床…")
-                cdn_map = _upload_images(page, local_imgs, say)
-                if cdn_map:
-                    say(f"图片上传完成 {len(cdn_map)}/{len(local_imgs)} 张")
-                # 传完抽屉关了，把焦点放回正文
-                try:
-                    _safe_click(editor, say, "正文编辑器")
-                except ToutiaoError:
-                    pass
-                page.wait_for_timeout(300)
-
-            # ---- 正文：一次性粘贴整篇 ----
-            # 之前是「逐块粘贴」，实测有严重问题：每次 Ctrl+V 都会落在上一次的选区上，
-            # 把前面粘好的内容**覆盖掉**（772 字的稿子最后只剩 58 字，字数忽增忽减）。
-            # 内容残缺 → 存草稿必失败。所以这里拼成一个完整 HTML 一次粘完，
-            # 全程只有一次粘贴操作，不会被自己覆盖。
-            html_parts: list[str] = []
-            plain_parts: list[str] = []
+            # ---- 正文：分段按顺序塞进去 ----
+            # 为什么不整篇一次粘完（含 <img>）：实测头条的粘贴清洗器会把
+            # `<img src="pstatp外链">` 变成一个**序列化不出去的坏节点**——
+            # 编辑器 DOM 里能看到图（甚至还翻倍），但保存请求的 content 里
+            # 一个 <img> 都没有，服务端随即返回 7050「保存失败」。
+            # 2026-11-27 实测：同一篇正文，不带图能存、带图必挂。
+            #
+            # 正确做法是**把图片当文件粘进去**，让头条自己的上传器接管：
+            # 它会传到 image_tt_private 并插入正规的图片节点，保存就正常了。
+            segments: list[tuple[str, str, str]] = []
             img_ok = img_fail = 0
             for block in payload["blocks"]:
                 if block["type"] == "text":
-                    html_parts.append(block["html"])
-                    plain_parts.append(block["text"])
+                    segments.append(("text", block["html"], block["text"]))
                     continue
-                if block.get("url"):
-                    html_parts.append(f'<p><img src="{block["url"]}" /></p>')
+                p = block.get("path")
+                if p and Path(p).exists():
+                    segments.append(("image", p, ""))
                     img_ok += 1
-                elif block.get("path") and cdn_map.get(block["path"]):
-                    html_parts.append(f'<p><img src="{cdn_map[block["path"]]}" /></p>')
+                elif block.get("url"):
+                    # 只有远程地址、没有本地文件：只能退回 HTML 粘贴
+                    segments.append(("text", f'<p><img src="{block["url"]}" /></p>', ""))
                     img_ok += 1
                 else:
                     img_fail += 1
-                    skipped.append(block.get("alt") or (Path(block["path"]).name
-                                                        if block.get("path") else "(空图片)"))
+                    skipped.append(block.get("alt") or
+                                   (Path(p).name if p else "(空图片)"))
 
-            full_html = "".join(html_parts)
-            full_text = "\n".join(plain_parts)
-            say(f"正文准备完成：{len(plain_parts)} 段、{img_ok} 张图，粘贴进编辑器…")
-            if not _fill_body(page, full_html, full_text, say):
+            full_text = "\n".join(b[2] for b in segments if b[0] == "text")
+            say(f"正文准备完成：{len(segments)} 段内容、{img_ok} 张图，写进编辑器…")
+            if not _fill_body_segments(page, segments, say):
                 shot = _shot(page, "empty_body")
                 raise ToutiaoError(
                     "正文没能填进头条编辑器，为避免存出一篇空白草稿，这次先中止。"
                     f"（现场截图 /media/uploads/{shot}）")
 
-            say(f"正文写完：段落 {len(plain_parts)} 段，"
+            say(f"正文写完：段落 {len(segments)} 段，"
                 f"图片进正文 {img_ok} 张，没进去 {img_fail} 张")
+            # 图到底进没进编辑器，得实测——头条的粘贴清洗器可能把 <img> 吞掉，
+            # 而正文内容看起来"填好了"，最后保存却 7050。
+            try:
+                dom_imgs = page.evaluate(
+                    "() => document.querySelectorAll('.ProseMirror img').length")
+                say(f"编辑器内实际图片：{dom_imgs} 张（预期 {img_ok} 张）")
+            except Exception:  # noqa: BLE001
+                pass
             if img_fail:
                 say("没进去的图：" + "、".join(skipped[:6])
                     + "——草稿可以事后人工补，不当成失败")
@@ -1311,11 +1503,25 @@ def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
             url = page.url or PUBLISH_URL
             if not save["ok"]:
                 shot = _shot(page, "save_fail")
+                dbg = _dump_save_debug(save_params, expected_body, min_content,
+                                       title=payload.get("title") or "")
                 hint = ""
                 if save.get("code") == 7050:
-                    hint = ("\n头条对「无头浏览器」有风控：请求头里 sec-ch-ua 若带 "
-                            "HeadlessChrome，保存接口会一律返回 7050。代码里已用 CDP "
-                            "覆盖成 Google Chrome；如果还报这个，说明头条又加了新检测。")
+                    hdr = save_params.get("hdr") or ""
+                    if "HeadlessChrome" not in hdr and "Google Chrome" in hdr:
+                        # 头是干净的还 7050，就别再拿"无头检测"当解释——那只会让人
+                        # 反复重试同一个坑。按实测的可能性排序，说人话。
+                        hint = ("\n这次请求头是正常 Chrome（sec-ch-ua 已覆盖）、正文也带上"
+                                "了，所以不是无头检测。是头条拒收这篇内容，常见原因："
+                                "正文带图被拒、图片或内容审核没过、短时间内推送太频繁。"
+                                "可以先去正文图片只存文字，或者隔十几分钟再试。"
+                                f"\n取证文件（含真实请求头、响应和全部表单字段）："
+                                f"/media/uploads/{dbg}")
+                    else:
+                        hint = ("\n头条对「无头浏览器」有风控：请求头里 sec-ch-ua 若带 "
+                                "HeadlessChrome，保存接口会一律返回 7050。代码里已用 CDP "
+                                "覆盖成 Google Chrome；如果还报这个，说明头条又加了新检测。"
+                                f"\n取证文件（含真实请求头和响应）：/media/uploads/{dbg}")
                 raise ToutiaoError(
                     f"存草稿失败：{save['evidence']}{hint}（现场截图 /media/uploads/{shot}）")
 
@@ -1329,6 +1535,8 @@ def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
                     f"接口说成功但草稿箱没查到：{verify['evidence']}"
                     f"（现场截图 /media/uploads/{shot}）")
             say(f"回读：{verify['evidence']}")
+            _dump_save_debug(save_params, expected_body, min_content,
+                             title=payload.get("title") or "", to_uploads=False)
             return {
                 "url": url,
                 "title": payload["title"],
@@ -1345,6 +1553,43 @@ def create_draft(article: dict[str, Any], *, account_id: int | str = 0,
                     browser.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _dump_save_debug(captured: dict[str, Any], expected_body: int, min_content: int,
+                     *, title: str = "", to_uploads: bool = True) -> str:
+    """把这次保存的现场证据落盘，返回文件名。
+
+    只记事实：页面最后一次保存请求带了多长正文、发了哪些字段、服务端回了什么。
+    排查 7050 / 空壳草稿靠这个，比截图有用。成功时也存一份（放 logs，不占上传目录），
+    方便拿「成功那次」和「失败那次」对比。
+    """
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    name = f"_toutiao_save_debug_{ts}.json"
+    info = {
+        "时间": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "标题": title,
+        "正文纯字数": expected_body,
+        "判定门槛(min_content)": min_content,
+        "最后一次保存请求": {
+            "url": captured.get("url", ""),
+            "content字段长度": int(captured.get("clen") or 0),
+            "content前缀": captured.get("content_sample", ""),
+            "content里的img标签": captured.get("img_tags", ""),
+            "全部表单字段": captured.get("fields", ""),
+            "请求头": captured.get("hdr", ""),
+            "响应": captured.get("resp", ""),
+            "带正文且成功(ok)": captured.get("ok") == "1",
+            "只存了空壳(ok_empty)": captured.get("ok_empty") == "1",
+            "返回7050(bad)": captured.get("bad") == "1",
+            "读取响应出错": captured.get("read_err", ""),
+        },
+    }
+    try:
+        dest = (UPLOAD_DIR if to_uploads else (DATA_DIR / "logs")) / name
+        dest.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return ""
+    return name
 
 
 def _body_len(page: Any) -> int:

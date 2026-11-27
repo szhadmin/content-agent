@@ -793,6 +793,39 @@ def verify_draft(client: WechatClient, media_id: str, expected_img: int = 0) -> 
 # 头条草稿（浏览器驱动后台发文页，只存草稿）
 # --------------------------------------------------------------------------
 
+def _tt_guard(acc: dict[str, Any]) -> None:
+    """头条号的推送冷却闸。
+
+    2026-11-27 实测：一小时内连续推十几次之后，**所有**保存都开始返回 7050
+    （连纯文字、连几分钟前刚成功过的那篇也一样）。等一段时间再推就恢复。
+    所以这不是"内容有问题"，是这个号被短期限流了——继续硬推只会把窗口越拖越长。
+
+    默认两次投递至少间隔 3 分钟，可在设置里用 toutiao_min_gap（秒）调。
+    """
+    try:
+        gap = int(db.get_setting("toutiao_min_gap") or 180)
+    except (TypeError, ValueError):
+        gap = 180
+    if gap <= 0:
+        return
+    key = f"tt_last_push_{acc['id']}"
+    raw = db.get_setting(key) or ""
+    try:
+        last = float(raw)
+    except (TypeError, ValueError):
+        return
+    passed = time.time() - last
+    if passed < gap:
+        wait = int(gap - passed)
+        raise RuntimeError(
+            f"「{acc['name']}」刚推过一次头条草稿（{int(passed)} 秒前），还差 {wait} 秒。"
+            f"头条号短时间内连续存草稿会被判 7050，越推恢复越慢——等一下再点。")
+
+
+def _tt_mark_push(acc: dict[str, Any]) -> None:
+    db.set_setting(f"tt_last_push_{acc['id']}", str(time.time()))
+
+
 def push_toutiao(article_id: int) -> dict[str, Any]:
     """把这篇稿子存进头条草稿箱。
 
@@ -807,6 +840,8 @@ def push_toutiao(article_id: int) -> dict[str, Any]:
             f"{PLATFORM_LABELS.get(acc.get('platform') or 'wechat')}），头条草稿不能往它名下投")
     if not (art.get("markdown") or "").strip():
         raise RuntimeError("正文是空的，先在编辑器里写点东西")
+    _tt_guard(acc)
+    _tt_mark_push(acc)
     log_append(article_id, f"头条草稿：开始投递到「{acc['name']}」")
     try:
         res = toutiao.create_draft(
@@ -830,10 +865,14 @@ def push_toutiao(article_id: int) -> dict[str, Any]:
         tt_url=res.get("url") or "",
         tt_at=db.now(),
         tt_state={k: res.get(k) for k in
-                  ("title", "images", "images_failed", "skipped", "verify")},
+                  ("title", "images", "images_failed", "skipped", "verify",
+                   "fallback_no_images", "note")},
         error="",
     )
-    log_append(article_id, f"头条草稿已保存：图片 {res.get('images', 0)} 张进正文")
+    if res.get("fallback_no_images"):
+        log_append(article_id, f"头条草稿已保存（纯文字版）：{res.get('note') or ''}")
+    else:
+        log_append(article_id, f"头条草稿已保存：图片 {res.get('images', 0)} 张进正文")
     return res
 
 

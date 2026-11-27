@@ -936,3 +936,32 @@ Dockerfile 里做成了 `PLAYWRIGHT_DOWNLOAD_HOST` 参数，默认走 npmmirror�
 
 另外：`python:3.12-slim` 现在是 Debian trixie，`libpng16-16` 这类带 `t64` 改名的包
 不要写死在 apt 里——Pillow 的 wheel 自带 libjpeg/zlib，用不着，写死反而会在新版基础镜像上构建失败。
+
+## 十二、头条 7050「保存失败」——三种成因，别再混着猜
+
+`{"code":7050,"message":"保存失败"}` 是头条最没信息量的错误码，实际至少有三种完全不同的
+原因。2026-11 逐个做对照实验分清楚了，排查顺序按这个来：
+
+**1. 请求头 sec-ch-ua 带 `HeadlessChrome`**
+
+无头浏览器的特征头。头条服务端读到这个头，保存一律 7050，跟内容无关。
+修法：CDP `Network.setUserAgentOverride` 连 `userAgentMetadata` 一起覆盖成正常 Chrome。
+验证：取证文件里的 `请求头.sec-ch-ua` 应该是 `"Google Chrome";v=...`。
+
+**2. 这个号被短期限流（连续推送太频繁）**
+
+实测：一小时内推十几次之后，**所有**保存都开始 7050——连纯文字、连几分钟前刚推成功过的
+同一篇都一样，等一会儿再推就恢复。此时所有"内容问题"的猜测都是错的。
+修法：加冷却闸（`toutiao_min_gap`，默认 180 秒），到了时间才允许下一次投递。
+
+**3. 正文里的图片节点序列化不出去**
+
+把 `<img src="外链">` 直接粘进 ProseMirror，编辑器 DOM 里能看到图（有时还翻倍），
+但保存请求的 `content` 字段里**一个 `<img>` 都没有**，然后服务端 7050。
+修法：不要粘外链——把**图片文件本身**当剪贴板内容粘进去，让头条自己的上传器接管，
+它会传成 `image_tt_private.toutiao.com/...from=image_upload` 并插入正规节点。
+
+排查用的取证：保存失败时会落一个
+`data/uploads/_toutiao_save_debug_<时间>.json`，里面有真实请求头、`content` 长度、
+`content` 里的 img 标签、全部表单字段和服务端原始响应。成功那次也会在
+`data/logs/` 里留一份，方便成功/失败对照。
